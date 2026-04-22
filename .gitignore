@@ -1,0 +1,14 @@
+# Python
+backend/venv/
+**/__pycache__/
+*.pyc
+
+# Environment
+backend/.env
+
+# VS Code
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
