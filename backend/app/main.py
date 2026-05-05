@@ -1,9 +1,11 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends
 from app.db.session import engine, Base
-from app.models.news import News 
+from app.models.news import News
 from app.models.esg_stat import ESGStat
 from sqlalchemy.orm import Session
 from app.db.session import get_db
+from app.scheduler import start_scheduler, run_all_syncs
 from io import StringIO
 import requests
 import csv
@@ -11,11 +13,26 @@ from datetime import datetime
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+scheduler = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global scheduler
+    scheduler = start_scheduler()
+    run_all_syncs()  # 서버 시작 시 즉시 1회 실행
+    yield
+    scheduler.shutdown()
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def read_root():
     return {"message": "ESG Watch Server is running!"}
+
+@app.post("/api/admin/sync-all")
+def manual_sync_all():
+    run_all_syncs()
+    return {"message": "전체 동기화 완료"}
 
 @app.get("/api/external/esg-news")
 def get_external_esg_news(page: int = 1, size: int = 10, db: Session = Depends(get_db)):
