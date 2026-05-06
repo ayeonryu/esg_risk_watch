@@ -5,7 +5,7 @@ from app.models.news import News
 from app.models.esg_stat import ESGStat
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.scheduler import start_scheduler, run_all_syncs
+from app.scheduler import start_scheduler, run_all_syncs, _parse_bigdata_date
 from io import StringIO
 import requests
 import csv
@@ -223,8 +223,20 @@ def get_news_bigdata_esg_1(page: int = 1, size: int = 10, db: Session = Depends(
     response = requests.get(url, params=params)
     data = response.json()
     items = data.get("data", [])
+    if isinstance(items, dict):
+        items = [items]
     for item in items:
-        db.add(News(title=item.get("제목"), content=item.get("본문"), published_at=item.get("일자")))
+        ext_id = str(item.get("뉴스식별자") or item.get("제목") or item.get("일자"))
+        if db.query(News).filter(News.external_id == ext_id).first():
+            continue
+        db.add(News(
+            external_id=ext_id,
+            category="NEWS_BIGDATA_ESG_1",
+            title=item.get("제목") or "No Title",
+            content=item.get("본문") or "",
+            media=item.get("언론사") or "ODcloud",
+            published_at=_parse_bigdata_date(item.get("일자")),
+        ))
     db.commit()
     return data
 
@@ -236,8 +248,20 @@ def get_news_bigdata_esg_2(page: int = 1, size: int = 10, db: Session = Depends(
     response = requests.get(url, params=params)
     data = response.json()
     items = data.get("data", [])
+    if isinstance(items, dict):
+        items = [items]
     for item in items:
-        db.add(News(title=item.get("제목"), content=item.get("본문"), published_at=item.get("일자")))
+        ext_id = str(item.get("뉴스식별자") or item.get("제목") or item.get("일자"))
+        if db.query(News).filter(News.external_id == ext_id).first():
+            continue
+        db.add(News(
+            external_id=ext_id,
+            category="NEWS_BIGDATA_ESG_2",
+            title=item.get("제목") or "No Title",
+            content=item.get("본문") or "",
+            media=item.get("언론사") or "ODcloud",
+            published_at=_parse_bigdata_date(item.get("일자")),
+        ))
     db.commit()
     return data
 
@@ -249,8 +273,20 @@ def get_news_bigdata_esg_3(page: int = 1, size: int = 10, db: Session = Depends(
     response = requests.get(url, params=params)
     data = response.json()
     items = data.get("data", [])
+    if isinstance(items, dict):
+        items = [items]
     for item in items:
-        db.add(News(title=item.get("제목"), content=item.get("본문"), published_at=item.get("일자")))
+        ext_id = str(item.get("뉴스식별자") or item.get("제목") or item.get("일자"))
+        if db.query(News).filter(News.external_id == ext_id).first():
+            continue
+        db.add(News(
+            external_id=ext_id,
+            category="NEWS_BIGDATA_ESG_3",
+            title=item.get("제목") or "No Title",
+            content=item.get("본문") or "",
+            media=item.get("언론사") or "ODcloud",
+            published_at=_parse_bigdata_date(item.get("일자")),
+        ))
     db.commit()
     return data
 
@@ -262,8 +298,20 @@ def get_news_bigdata_esg_4(page: int = 1, size: int = 10, db: Session = Depends(
     response = requests.get(url, params=params)
     data = response.json()
     items = data.get("data", [])
+    if isinstance(items, dict):
+        items = [items]
     for item in items:
-        db.add(News(title=item.get("제목"), content=item.get("본문"), published_at=item.get("일자")))
+        ext_id = str(item.get("뉴스식별자") or item.get("제목") or item.get("일자"))
+        if db.query(News).filter(News.external_id == ext_id).first():
+            continue
+        db.add(News(
+            external_id=ext_id,
+            category="NEWS_BIGDATA_ESG_4",
+            title=item.get("제목") or "No Title",
+            content=item.get("본문") or "",
+            media=item.get("언론사") or "ODcloud",
+            published_at=_parse_bigdata_date(item.get("일자")),
+        ))
     db.commit()
     return data
 
