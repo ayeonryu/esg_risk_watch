@@ -9,19 +9,20 @@ from io import StringIO
 from datetime import datetime, date
 import hashlib
 import json
+import math
 
 SERVICE_KEY = "43b016f2295f780a65665aa1587a7f80e7f3be918cfacf883a66488069cd075c"
 DC_API_KEY = "3bRAYyaN6gBdO7esp4GkyRlzYETJcXXuGkiAM6fRPf77hOvs"
 
-BIGDATA_URLS = [
-    "https://api.odcloud.kr/api/15097922/v1/uddi:97ce0eff-7786-4ace-ac15-aec8d947112a",
-    "https://api.odcloud.kr/api/15097922/v1/uddi:27150cfe-98f8-4608-9036-d68907d18fad",
-    "https://api.odcloud.kr/api/15097922/v1/uddi:36367d6b-9588-4245-819f-b1f0ba836185",
-    "https://api.odcloud.kr/api/15097922/v1/uddi:729fb13d-78df-47c1-bc75-e8ee986fbd67",
-]
 
-BIGDATA_YEAR_MIN = 2021
-BIGDATA_YEAR_MAX = 2024
+current_year = datetime.now().year
+
+BIGDATA_CONFIGS = [
+    {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:97ce0eff-7786-4ace-ac15-aec8d947112a", "year_min": 2020, "year_max": current_year},
+    {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:27150cfe-98f8-4608-9036-d68907d18fad", "year_min": 2020, "year_max": current_year},
+    {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:36367d6b-9588-4245-819f-b1f0ba836185", "year_min": 2020, "year_max": current_year},
+    {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:729fb13d-78df-47c1-bc75-e8ee986fbd67", "year_min": 2020, "year_max": current_year},
+]
 BIGDATA_BATCH_SIZE = 100
 
 
@@ -44,11 +45,11 @@ def _parse_bigdata_date(value):
     return None
 
 
-def _is_bigdata_year_allowed(value):
+def _is_bigdata_year_allowed(value, year_min, year_max):
     parsed_date = _parse_bigdata_date(value)
     if not parsed_date:
         return False
-    return BIGDATA_YEAR_MIN <= parsed_date.year <= BIGDATA_YEAR_MAX
+    return year_min <= parsed_date.year <= year_max
 
 
 def _extract_bigdata_items(payload):
@@ -83,13 +84,12 @@ def _build_bigdata_external_id(source_name, item):
     ).hexdigest()
     return f"{source_name}:{digest}"
 
+
 def fetch_all_news(url: str, category: str, db, start_page: int = 1):
     try:
-        # API 호출 및 JSON 변환
         res = requests.get(url, params={"serviceKey": SERVICE_KEY, "type": "json", "numOfRows": 1, "pageNo": start_page})
         data = res.json()
-        
-        # API 응답 형식 확인 (KeyError 방지)
+
         if "response" not in data or "body" not in data["response"]:
             print(f"[Error] {category} API 응답 형식이 올바르지 않습니다: {data}")
             return 0
@@ -97,32 +97,30 @@ def fetch_all_news(url: str, category: str, db, start_page: int = 1):
         total = int(data["response"]["body"].get("totalCnt", 0))
         added = 0
         page = start_page
-        
+
         while True:
             res = requests.get(url, params={"serviceKey": SERVICE_KEY, "type": "json", "numOfRows": 10, "pageNo": page})
             data = res.json()
-            
+
             try:
                 items = data["response"]["body"]["itemList"]["item"]
             except (KeyError, TypeError):
                 break
-                
+
             if not items:
                 break
-                
+
             if isinstance(items, dict):
                 items = [items]
-                
+
             for item in items:
-                # 중복 방지를 위한 고유 ID (nttSn 또는 제목 사용)
                 ext_id = str(item.get("nttSn") or item.get("nttSj"))
-                
-                # 이미 DB에 있는지 확인
+
                 if db.query(News).filter(News.external_id == ext_id).first():
                     continue
-                    
+
                 db.add(News(
-                    external_id=ext_id, 
+                    external_id=ext_id,
                     category=category,
                     title=item.get("nttSj") or "No Title",
                     content=item.get("smmarCn") or "",
@@ -130,20 +128,20 @@ def fetch_all_news(url: str, category: str, db, start_page: int = 1):
                     published_at=item.get("regDt")
                 ))
                 added += 1
-                
+
             db.commit()
             page += 1
-            
-            # 페이지 초과 방지
-            if page > (total // 10) + 2:
-                break
-                
+
+            if page > math.ceil(total / 10):
+                 break
+
         print(f"[{category}] 동기화 완료: {added}건 신규 저장")
         return added
-        
+
     except Exception as e:
         print(f"[Error] {category} 수집 중 예외 발생: {str(e)}")
         return 0
+
 
 def sync_esg_news():
     db = SessionLocal()
@@ -152,12 +150,14 @@ def sync_esg_news():
     finally:
         db.close()
 
+
 def sync_china_issues():
     db = SessionLocal()
     try:
         fetch_all_news("https://apis.data.go.kr/B410001/chinaGlobalIssueMonitoring/getChinaGlobalIssueMonitoring", "CHINA", db)
     finally:
         db.close()
+
 
 def sync_usa_issues():
     db = SessionLocal()
@@ -166,10 +166,14 @@ def sync_usa_issues():
     finally:
         db.close()
 
+
 def sync_bigdata_esg():
     db = SessionLocal()
     try:
-        for idx, url in enumerate(BIGDATA_URLS, start=1):
+        for idx, config in enumerate(BIGDATA_CONFIGS, start=1):
+            url = config["url"]
+            year_min = config["year_min"]
+            year_max = config["year_max"]
             try:
                 source_name = f"NEWS_BIGDATA_ESG_{idx}"
                 existing_ids = {
@@ -211,7 +215,7 @@ def sync_bigdata_esg():
                             page_has_allowed_year = True
                             page_max_year = max(page_max_year, published_at.year)
 
-                        if not _is_bigdata_year_allowed(published_at):
+                        if not _is_bigdata_year_allowed(published_at, year_min, year_max):
                             continue
                         ext_id = _build_bigdata_external_id(source_name, item)
                         if ext_id in existing_ids:
@@ -235,7 +239,7 @@ def sync_bigdata_esg():
                     if total and page * BIGDATA_BATCH_SIZE >= total:
                         break
 
-                    if page_has_allowed_year and page_max_year < BIGDATA_YEAR_MIN:
+                    if page_has_allowed_year and page_max_year < year_min:
                         break
 
                     page += 1
@@ -246,6 +250,7 @@ def sync_bigdata_esg():
                 print(f"[BIGDATA] 수집 실패: {url} / {e}")
     finally:
         db.close()
+
 
 def sync_greenhouse_gas():
     db = SessionLocal()
@@ -283,6 +288,7 @@ def sync_greenhouse_gas():
     finally:
         db.close()
 
+
 def sync_worldbank(indicator: str, category: str, risk_type: str,
                    countries_str: str = "KOR,USA,CHN,DEU", start: int = 2020, end: int = 2025):
     db = SessionLocal()
@@ -305,6 +311,7 @@ def sync_worldbank(indicator: str, category: str, risk_type: str,
         db.commit()
     finally:
         db.close()
+
 
 def sync_freedom_score():
     db = SessionLocal()
@@ -334,6 +341,7 @@ def sync_freedom_score():
     finally:
         db.close()
 
+
 def run_all_syncs():
     print("[Scheduler] 전체 동기화 시작...")
     steps = [
@@ -356,6 +364,7 @@ def run_all_syncs():
         except Exception as e:
             print(f"[Scheduler] 실패: {name} / {e}")
     print("[Scheduler] 전체 동기화 완료!")
+
 
 def start_scheduler():
     scheduler = BackgroundScheduler()

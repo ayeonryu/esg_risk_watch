@@ -9,6 +9,7 @@ from app.scheduler import start_scheduler, run_all_syncs, _parse_bigdata_date
 from io import StringIO
 import requests
 import csv
+import os
 from datetime import datetime
 
 Base.metadata.create_all(bind=engine)
@@ -19,7 +20,14 @@ scheduler = None
 async def lifespan(app: FastAPI):
     global scheduler
     scheduler = start_scheduler()
-    run_all_syncs()  # 서버 시작 시 즉시 1회 실행
+
+    if os.getenv("FULL_SYNC", "false").lower() == "true":
+        print("전체 동기화 시작...")
+        run_all_syncs()
+        print("전체 동기화 완료!")
+    else:
+        print("실시간 스케줄러만 시작합니다.")
+
     yield
     scheduler.shutdown()
 
@@ -290,6 +298,14 @@ def get_news_bigdata_esg_3(page: int = 1, size: int = 10, db: Session = Depends(
     db.commit()
     return data
 
+@app.get("/api/external/news-bigdata-esg-3/debug")
+def debug_news_bigdata_esg_3():
+    service_key = "43b016f2295f780a65665aa1587a7f80e7f3be918cfacf883a66488069cd075c"
+    url = "https://api.odcloud.kr/api/15097922/v1/uddi:36367d6b-9588-4245-819f-b1f0ba836185"
+    params = {"serviceKey": service_key, "page": 1, "perPage": 3, "returnType": "JSON"}
+    response = requests.get(url, params=params)
+    return response.json()
+
 @app.get("/api/external/news-bigdata-esg-4")
 def get_news_bigdata_esg_4(page: int = 1, size: int = 10, db: Session = Depends(get_db)):
     service_key = "43b016f2295f780a65665aa1587a7f80e7f3be918cfacf883a66488069cd075c"
@@ -403,3 +419,10 @@ def get_freedom_score(db: Session = Depends(get_db)):
             db.add(ESGStat(**record_data))
     db.commit()
     return result
+@app.get("/api/external/news-bigdata-esg-3/debug")
+def debug_news_bigdata_esg_3():
+    service_key = "43b016f2295f780a65665aa1587a7f80e7f3be918cfacf883a66488069cd075c"
+    url = "https://api.odcloud.kr/api/15097922/v1/uddi:36367d6b-9588-4245-819f-b1f0ba836185"
+    params = {"serviceKey": service_key, "page": 1, "perPage": 3, "returnType": "JSON"}
+    response = requests.get(url, params=params)
+    return response.json()
