@@ -10,6 +10,7 @@ from app.models.news import News
 from app.models.esg_stat import ESGStat
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 SERVICE_KEY = "43b016f2295f780a65665aa1587a7f80e7f3be918cfacf883a66488069cd075c"
 current_year = datetime.now().year
@@ -17,8 +18,8 @@ current_year = datetime.now().year
 BIGDATA_CONFIGS = [
     {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:97ce0eff-7786-4ace-ac15-aec8d947112a", "year_min": 2020, "year_max": current_year, "name": "NEWS_BIGDATA_ESG_1"},
     {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:27150cfe-98f8-4608-9036-d68907d18fad", "year_min": 2020, "year_max": current_year, "name": "NEWS_BIGDATA_ESG_2"},
-    {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:e68195a9-e854-4364-8848-d56775924741", "year_min": 2020, "year_max": current_year, "name": "NEWS_BIGDATA_ESG_3"},
-    {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:46453982-f673-4530-9b36-7e3e00e84860", "year_min": 2020, "year_max": current_year, "name": "NEWS_BIGDATA_ESG_4"},
+    {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:36367d6b-9588-4245-819f-b1f0ba836185", "year_min": 2020, "year_max": current_year, "name": "NEWS_BIGDATA_ESG_3"},
+    {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:729fb13d-78df-47c1-bc75-e8ee986fbd67", "year_min": 2020, "year_max": current_year, "name": "NEWS_BIGDATA_ESG_4"},
 ]
 
 def _parse_bigdata_date(value):
@@ -71,6 +72,8 @@ def fetch_all_news(url, category, db):
         print(f"[오류] {category} API 에러: {e}")
         return 0
 
+
+
 def sync_bigdata_esg():
     db = SessionLocal()
     total_added = 0
@@ -82,29 +85,41 @@ def sync_bigdata_esg():
                 res = requests.get(config["url"], params={"serviceKey": SERVICE_KEY, "page": page, "perPage": 100, "returnType": "JSON"}, timeout=30)
                 data = res.json()
                 items = data.get("data", [])
-                if not items: break
+                if not items:
+                    break
+
                 new_rows = []
                 for item in items:
                     published_at = _parse_bigdata_date(item.get("일자"))
-                    if not published_at or not (config["year_min"] <= published_at.year <= config["year_max"]): continue
+                    if not published_at or not (config["year_min"] <= published_at.year <= config["year_max"]):
+                        continue
                     digest = hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()
                     ext_id = f"{source_name}:{digest}"
-                    if db.query(News).filter(News.external_id == ext_id).first(): continue
-                    new_rows.append(News(
-                        external_id=ext_id, category=source_name,
-                        title=item.get("제목") or "No Title", content=item.get("본문") or "",
-                        media=item.get("언론사") or "ODcloud", published_at=published_at
-                    ))
-                    added += 1
-                    total_added += 1
+                    new_rows.append({
+                        "external_id": ext_id,
+                        "category": source_name,
+                        "title": item.get("제목") or "No Title",
+                        "content": item.get("본문") or "",
+                        "media": item.get("언론사") or "ODcloud",
+                        "published_at": published_at,
+                    })
+
                 if new_rows:
-                    db.bulk_save_objects(new_rows)
+                    stmt = mysql_insert(News).values(new_rows).prefix_with("IGNORE")
+                    result = db.execute(stmt)
                     db.commit()
-                if page * 100 >= data.get("totalCount", 0): break
+                    added += result.rowcount
+                    total_added += result.rowcount
+
+                total_count = data.get("totalCount", 0)
+                if not total_count or page * 100 >= total_count:
+                    break
                 page += 1
+
             print(f"[{source_name}] 완료: 신규 {added}건")
         return total_added
-    finally: db.close()
+    finally:
+        db.close()
 
 def sync_worldbank(indicator_code, category, risk_type):
     db = SessionLocal()
