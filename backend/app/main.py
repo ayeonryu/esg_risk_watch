@@ -3,6 +3,8 @@ from fastapi import FastAPI
 from app.db.session import engine, Base
 from app.api.v1.endpoints import news
 from app import scheduler
+from app.models.news import News
+from app.models.esg_stat import ESGStat
 
 Base.metadata.create_all(bind=engine)
 
