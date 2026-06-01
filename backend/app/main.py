@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.session import engine, Base
-from app.api.v1.endpoints import news, briefings, countries, risks, trends, health, indicators
+from app.api.v1.endpoints import news, briefings, countries, risks, trends, health#, indicators
 from app import scheduler
 from app.models.news import News
 from app.models.esg_stat import ESGStat
@@ -34,7 +34,7 @@ app.add_middleware(
 # 모든 라우터 등록
 app.include_router(health.router, prefix="/api/v1/health", tags=["health"])
 app.include_router(news.router, prefix="/api/v1/news", tags=["news"])
-app.include_router(indicators.router, prefix="/api/v1/indicators", tags=["indicators"])
+#er(indicators.router, prefix="/api/v1/indicators", tags=["indicators"])
 app.include_router(briefings.router, prefix="/api/v1/briefings", tags=["briefings"])
 app.include_router(countries.router, prefix="/api/v1/countries", tags=["countries"])
 app.include_router(risks.router, prefix="/api/v1/risks", tags=["risks"])

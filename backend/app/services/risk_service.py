@@ -3,15 +3,18 @@ from app.models.risk import Risk
 from app.repositories import risk_repository
 
 def create_risk_from_dict(db: Session, risk_data: dict):
-    """API 응답을 Risk 객체로 변환 후 저장"""
     external_id = risk_data.get("external_id") or risk_data.get("id")
     
     if risk_repository.get_risk_by_external_id(db, str(external_id)):
         return None
     
+    country_code = risk_data.get("country_code")
+    if country_code in ["DE", "Germany", "독일"]:
+        country_code = "DEU"
+        
     risk = Risk(
         external_id=str(external_id),
-        country_code=risk_data.get("country_code"),
+        country_code=country_code,
         country_name=risk_data.get("country_name"),
         risk_type=risk_data.get("risk_type"),
         risk_category=risk_data.get("risk_category"),
@@ -30,6 +33,8 @@ def get_all_risks(db: Session, skip: int = 0, limit: int = 100):
     return risk_repository.get_all_risks(db, skip, limit)
 
 def get_risks_by_country(db: Session, country_code: str):
+    if country_code in ["DE", "Germany", "독일"]:
+        country_code = "DEU"
     return risk_repository.get_risks_by_country(db, country_code)
 
 def clear_all_risks(db: Session):

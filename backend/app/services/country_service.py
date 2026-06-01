@@ -3,8 +3,11 @@ from app.models.country import Country
 from app.repositories import country_repository
 
 def create_or_update_country_from_dict(db: Session, country_data: dict):
-    """API 응답을 Country 객체로 변환 후 저장/업데이트"""
     country_code = country_data.get("country_code")
+    
+    if country_code in ["DE", "Germany", "독일"]:
+        country_code = "DEU"
+        
     if not country_code:
         return None
     
@@ -25,6 +28,8 @@ def get_all_countries(db: Session, skip: int = 0, limit: int = 100):
     return country_repository.get_all_countries(db, skip, limit)
 
 def get_country_by_code(db: Session, country_code: str):
+    if country_code in ["DE", "Germany", "독일"]:
+        country_code = "DEU"
     return country_repository.get_country_by_code(db, country_code)
 
 def clear_all_countries(db: Session):
