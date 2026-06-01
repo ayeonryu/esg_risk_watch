@@ -16,7 +16,7 @@ const fallbackNewsItems = [
   "현대차그룹, 협력사 ESG 평가 시스템 도입 — 공급망 관리 강화",
 ];
 
-const keyIndicators = [
+const fallbackKeyIndicators = [
   { label: "탄소 배출량", value: "+15%", color: "#4CAF50", alert: true },
   { label: "재생에너지 비율", value: "38%", color: "#4CAF50" },
   { label: "여성 임원 비율", value: "22%", color: "#4CAF50" },
@@ -34,6 +34,33 @@ const TABS = ["ALL", "E", "S", "G"];
 
 const getToday = () => new Date().toISOString().slice(0, 10);
 
+function formatIndicatorValue(item) {
+  if (item.change_pct !== null && item.change_pct !== undefined) {
+    const sign = item.direction === "up" ? "+" : item.direction === "down" ? "-" : "";
+    return `${sign}${Math.abs(item.change_pct).toFixed(1)}%`;
+  }
+
+  const value = Number(item.value);
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+
+  const formatted = value.toLocaleString("ko-KR", {
+    maximumFractionDigits: 1,
+  });
+  return item.unit ? `${formatted} ${item.unit}` : formatted;
+}
+
+function indicatorColor(riskLevel) {
+  if (riskLevel === "high") {
+    return "#C62828";
+  }
+  if (riskLevel === "medium") {
+    return "#F57F17";
+  }
+  return "#2E7D32";
+}
+
 export default function ESGDashboard({ country, onBack }) {
   const [activeTab, setActiveTab] = useState("ALL");
   const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
@@ -43,6 +70,8 @@ export default function ESGDashboard({ country, onBack }) {
   const [endDate, setEndDate] = useState(getToday);
   const [newsItems, setNewsItems] = useState(fallbackNewsItems);
   const [newsStatus, setNewsStatus] = useState("idle");
+  const [keyIndicatorItems, setKeyIndicatorItems] = useState(fallbackKeyIndicators);
+  const [indicatorStatus, setIndicatorStatus] = useState("idle");
 
   const countryName = country?.name || "선택 국가";
   const countryCode = country?.code || COUNTRY_CODE_BY_NAME[countryName];
@@ -95,6 +124,52 @@ export default function ESGDashboard({ country, onBack }) {
     }
 
     loadNews();
+
+    return () => controller.abort();
+  }, [countryCode]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadIndicators() {
+      setIndicatorStatus("loading");
+
+      try {
+        const params = new URLSearchParams({ limit: "4" });
+        if (countryCode) {
+          params.set("country", countryCode);
+        }
+
+        const response = await fetch(`${API_BASE_URL}/indicators/summary?${params}`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Indicators API failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const items = data.items || [];
+        setKeyIndicatorItems(
+          items.length > 0
+            ? items.map((item) => ({
+                label: item.label,
+                value: formatIndicatorValue(item),
+                color: indicatorColor(item.risk_level),
+              }))
+            : fallbackKeyIndicators,
+        );
+        setIndicatorStatus(items.length > 0 ? "loaded" : "empty");
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          console.warn(error);
+          setKeyIndicatorItems(fallbackKeyIndicators);
+          setIndicatorStatus("error");
+        }
+      }
+    }
+
+    loadIndicators();
 
     return () => controller.abort();
   }, [countryCode]);
@@ -396,12 +471,25 @@ export default function ESGDashboard({ country, onBack }) {
         >
           <Card title="주요 변동 지표" style={{ padding: "12px 10px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {keyIndicators.map((ind, i) => (
+              {indicatorStatus === "loading" && (
+                <div
+                  style={{
+                    color: "#777",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "3px 10px",
+                  }}
+                >
+                  지표를 불러오는 중입니다...
+                </div>
+              )}
+
+              {keyIndicatorItems.map((ind, i) => (
                 <div
                   key={i}
                   style={{
                     background: "#E8F5E9",
-                    color: "#2E7D32",
+                    color: ind.color || "#2E7D32",
                     borderRadius: 20,
                     padding: "3px 10px",
                     fontSize: 11,
