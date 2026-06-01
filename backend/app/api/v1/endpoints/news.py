@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.news import News
@@ -6,6 +6,40 @@ from app.models.esg_stat import ESGStat
 from app import scheduler
 
 router = APIRouter()
+
+@router.get("/")
+def list_news(
+    country: str | None = Query(None),
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    query = db.query(News)
+    if country:
+        query = query.filter(News.country == country)
+
+    rows = (
+        query.order_by(News.published_at.desc(), News.created_at.desc(), News.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": row.id,
+            "external_id": row.external_id,
+            "category": row.category,
+            "title": row.title,
+            "content": row.content,
+            "keywords": row.keywords,
+            "media": row.media,
+            "country": row.country,
+            "region": row.region,
+            "published_at": row.published_at.isoformat() if row.published_at else None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "esg_score": row.esg_score,
+        }
+        for row in rows
+    ]
 
 @router.post("/sync/all")
 def sync_everything(background_tasks: BackgroundTasks):
