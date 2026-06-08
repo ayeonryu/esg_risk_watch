@@ -6,4 +6,4 @@ if __name__ == '__main__':
         os.environ["FULL_SYNC"] = "true" if choice == "y" else "false"
 
     import uvicorn
-    uvicorn.run("app.main:app", reload=True)
+    uvicorn.run("app.main:app", reload=False)

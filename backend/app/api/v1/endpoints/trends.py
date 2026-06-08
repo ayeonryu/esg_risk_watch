@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Depends, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.models.trend import Trend
-from app.services import trend_service
+from app.models.esg_stat import ESGStat
 
 router = APIRouter()
 
@@ -13,7 +12,7 @@ def sync_all_trends(background_tasks: BackgroundTasks):
 
 @router.get("/list")
 def list_trends(skip: int = Query(0), limit: int = Query(100), db: Session = Depends(get_db)):
-    trends = trend_service.get_all_trends(db, skip, limit)
+    trends = db.query(ESGStat).offset(skip).limit(limit).all()
     return {
         "total": len(trends),
         "items": trends,
@@ -23,7 +22,7 @@ def list_trends(skip: int = Query(0), limit: int = Query(100), db: Session = Dep
 
 @router.get("/country/{country_code}")
 def get_trends_by_country(country_code: str, db: Session = Depends(get_db)):
-    trends = db.query(Trend).filter(Trend.country_code == country_code).all()
+    trends = db.query(ESGStat).filter(ESGStat.country_code == country_code).all()
     return {
         "country_code": country_code,
         "total": len(trends),
@@ -32,7 +31,7 @@ def get_trends_by_country(country_code: str, db: Session = Depends(get_db)):
 
 @router.get("/category/{category}")
 def get_trends_by_category(category: str, db: Session = Depends(get_db)):
-    trends = trend_service.get_trends_by_category(db, category)
+    trends = db.query(ESGStat).filter(ESGStat.category == category).all()
     return {
         "category": category,
         "total": len(trends),
@@ -43,8 +42,7 @@ def get_trends_by_category(category: str, db: Session = Depends(get_db)):
 def get_trends_by_esg(esg_category: str, db: Session = Depends(get_db)):
     if esg_category not in ["E", "S", "G"]:
         return {"status": "failed", "message": "E, S, G 중 하나를 선택하세요"}
-    
-    trends = db.query(Trend).filter(Trend.esg_category == esg_category).all()
+    trends = db.query(ESGStat).filter(ESGStat.category == esg_category).all()
     return {
         "esg_category": esg_category,
         "total": len(trends),
@@ -53,7 +51,7 @@ def get_trends_by_esg(esg_category: str, db: Session = Depends(get_db)):
 
 @router.get("/emerging")
 def get_emerging_trends(db: Session = Depends(get_db)):
-    trends = db.query(Trend).filter(Trend.trend_type == "emerging").all()
+    trends = db.query(ESGStat).filter(ESGStat.year == 2026).all()
     return {
         "trend_type": "emerging",
         "total": len(trends),
@@ -63,7 +61,9 @@ def get_emerging_trends(db: Session = Depends(get_db)):
 @router.delete("/clear")
 def clear_all_trends(db: Session = Depends(get_db)):
     try:
-        trend_service.clear_all_trends(db)
+        db.query(ESGStat).delete()
+        db.commit()
         return {"status": "성공", "message": "모든 트렌드 데이터가 삭제되었습니다"}
     except Exception as e:
+        db.rollback()
         return {"status": "실패", "message": str(e)}

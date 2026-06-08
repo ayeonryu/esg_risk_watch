@@ -34,28 +34,51 @@ def _parse_bigdata_date(value):
     return None
 
 def fetch_all_news(url, category, db):
+    import time
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     try:
-        res = requests.get(url, params={"serviceKey": SERVICE_KEY, "type": "json", "numOfRows": 1, "pageNo": 1}, timeout=10)
+        res = requests.get(url, params={"serviceKey": SERVICE_KEY, "type": "json", "numOfRows": 1, "pageNo": 1}, headers=headers, timeout=5)
         data = res.json()
         total = int(data.get("response", {}).get("body", {}).get("totalCnt", 0))
         if total == 0: return 0
         added, page, max_page = 0, 1, math.ceil(total / 10)
         while page <= max_page:
             try:
-                print(f"[{category}] 현재 {page} / {max_page} 페이지 수집 중...")
-                res = requests.get(url, params={"serviceKey": SERVICE_KEY, "type": "json", "numOfRows": 10, "pageNo": page}, timeout=15)
-                body = res.json().get("response", {}).get("body")
-                if not body:
+                print(f"[{category}] 현재 {page} / {max_page} 페이지 수집 중...", flush=True)
+                time.sleep(0.3)
+                res = requests.get(url, params={"serviceKey": SERVICE_KEY, "type": "json", "numOfRows": 10, "pageNo": page}, headers=headers, timeout=5)
+                
+                if res.status_code != 200:
                     page += 1
                     continue
-                items = body.get("itemList", {}).get("item", [])
+                    
+                json_data = res.json()
+                response_obj = json_data.get("response") or {}
+                body_obj = response_obj.get("body") or {}
+                item_list_obj = body_obj.get("itemList") or {}
+                
+                if isinstance(item_list_obj, dict):
+                    items = item_list_obj.get("item", [])
+                else:
+                    items = []
+                    
                 if not items:
                     page += 1
                     continue
-                if isinstance(items, dict): items = [items]
+                    
+                if isinstance(items, dict): 
+                    items = [items]
+                    
                 for item in items:
-                    ext_id = str(item.get("nttSn") or item.get("nttSj"))
-                    if db.query(News).filter(News.external_id == ext_id).first(): continue
+                    if not isinstance(item, dict): 
+                        continue
+                    ext_id = str(item.get("nttSn") or item.get("nttSj") or "")
+                    if not ext_id: 
+                        continue
+                    if db.query(News).filter(News.external_id == ext_id).first(): 
+                        continue
                     db.add(News(
                         external_id=ext_id, category=category,
                         title=item.get("nttSj") or "No Title", content=item.get("smmarCn") or "",
@@ -65,14 +88,12 @@ def fetch_all_news(url, category, db):
                 db.commit()
                 page += 1
             except Exception as e:
-                print(f"-> {page}페이지 오류 발생(무시): {e}")
+                print(f"-> {page}페이지 오류 발생(무시): {e}", flush=True)
                 page += 1
         return added
     except Exception as e:
-        print(f"[오류] {category} API 에러: {e}")
+        print(f"[오류] {category} API 에러: {e}", flush=True)
         return 0
-
-
 
 def sync_bigdata_esg():
     db = SessionLocal()
@@ -122,23 +143,69 @@ def sync_bigdata_esg():
         db.close()
 
 def sync_worldbank(indicator_code, category, risk_type):
+    import requests
+    from datetime import datetime
     db = SessionLocal()
+    try:
+        current_year = datetime.now().year
+        url = f"https://api.worldbank.org/v2/country/all/indicator/{indicator_code}"
+        res = requests.get(url, params={"format": "json", "per_page": 300, "date": f"{current_year-5}:{current_year}"}, timeout=20)
+        
+        if res.status_code != 200:
+            return
+            
+        try:
+            data = res.json()
+        except Exception:
+            return
+            
+        if not isinstance(data, list) or len(data) < 2: 
+            return
+            
+        target_countries = {"KOR", "USA", "CHN"}
+        for item in data[1]:
+            if not isinstance(item, dict):
+                continue
+            val = item.get("value")
+            if val is None: 
+                continue
+            c_code = item.get("countryiso3code")
+            if c_code not in target_countries:
+                continue
+            db.add(ESGStat(
+                category=category, risk_type=risk_type, country=item.get("country", {}).get("value"),
+                country_code=c_code, indicator=item.get("indicator", {}).get("value"),
+                indicator_code=indicator_code, year=int(item.get("date")), value=float(val)
+            ))
+        db.commit()
+    except Exception as e:
+        print(f"[오류] 월드뱅크 지표({indicator_code}) 수집 무시: {e}", flush=True)
+    finally:
+        db.close()   
+        db = SessionLocal()
     try:
         url = f"https://api.worldbank.org/v2/country/all/indicator/{indicator_code}"
         res = requests.get(url, params={"format": "json", "per_page": 300, "date": f"{current_year-5}:{current_year}"}, timeout=20)
         data = res.json()
         if len(data) < 2: return
+        
+        target_countries = {"KOR", "USA", "CHN"}
+        
         for item in data[1]:
             val = item.get("value")
             if val is None: continue
+            
+            c_code = item.get("countryiso3code")
+            if c_code not in target_countries:
+                continue
+                
             db.add(ESGStat(
                 category=category, risk_type=risk_type, country=item.get("country", {}).get("value"),
-                country_code=item.get("countryiso3code"), indicator=item.get("indicator", {}).get("value"),
+                country_code=c_code, indicator=item.get("indicator", {}).get("value"),
                 indicator_code=indicator_code, year=int(item.get("date")), value=float(val)
             ))
         db.commit()
     finally: db.close()
-
 def sync_freedom_score():
     db = SessionLocal()
     try:

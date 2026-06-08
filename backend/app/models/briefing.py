@@ -11,12 +11,11 @@ class Briefing(Base):
     title = Column(String(500), nullable=False)
     content = Column(Text, nullable=True)
     
-    category = Column(String(100), index=True)  # 주제별 분류
-    source = Column(String(100), index=True)    # 출처
-    country = Column(String(50), index=True)
+    category = Column(String(100), index=True)  
+    source = Column(String(100), index=True) 
     
     published_at = Column(Date, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    summary = Column(Text, nullable=True)  # 요약본
+    summary = Column(Text, nullable=True)  
     esg_score = Column(Integer)
