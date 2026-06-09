@@ -5,8 +5,10 @@ import json
 import csv
 import io
 import zipfile
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from io import StringIO
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from app.db.session import SessionLocal
 from app.models.news import News
 from app.models.esg_stat import ESGStat
@@ -14,6 +16,7 @@ from app.core.config import SERVICE_KEY
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy import func
 
 current_year = datetime.now().year
 TARGET_COUNTRIES = {"KOR", "USA", "CHN", "DEU"}
@@ -31,6 +34,19 @@ BIGDATA_CONFIGS = [
     {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:729fb13d-78df-47c1-bc75-e8ee986fbd67", "year_min": 2020, "year_max": current_year, "name": "NEWS_BIGDATA_ESG_4"},
 ]
 
+RECENT_NEWS_FALLBACKS = {
+    "KOR": {
+        "label": "South Korea",
+        "query": '(ESG OR sustainability OR "carbon neutral" OR "climate risk") ("South Korea" OR Korean)',
+        "rss_query": 'ESG OR sustainability "South Korea"',
+    },
+    "DEU": {
+        "label": "Germany",
+        "query": '(ESG OR sustainability OR "carbon neutral" OR "climate risk") (Germany OR German)',
+        "rss_query": 'ESG OR sustainability Germany',
+    },
+}
+
 def _parse_bigdata_date(value):
     if value is None: return None
     if isinstance(value, date): return value
@@ -41,6 +57,99 @@ def _parse_bigdata_date(value):
             try: return datetime.strptime(candidate, fmt).date()
             except ValueError: continue
     return None
+
+def _parse_gdelt_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y%m%dT%H%M%SZ", "%Y%m%d%H%M%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def _parse_rss_date(value):
+    try:
+        parsed = parsedate_to_datetime(str(value or ""))
+        return parsed.date()
+    except Exception:
+        return None
+
+def sync_google_news_country(country_code, db, max_records=10):
+    config = RECENT_NEWS_FALLBACKS.get(country_code)
+    if not config:
+        return 0
+
+    try:
+        res = requests.get(
+            "https://news.google.com/rss/search",
+            params={
+                "q": config["rss_query"],
+                "hl": "ko",
+                "gl": "KR",
+                "ceid": "KR:ko",
+            },
+            headers={"User-Agent": "ESG Risk Watch data sync"},
+            timeout=15,
+        )
+        res.raise_for_status()
+        root = ET.fromstring(res.content)
+        added = 0
+
+        for item in root.findall(".//item")[:max_records]:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub_date = _parse_rss_date(item.findtext("pubDate"))
+            source = item.find("source")
+            media = (source.text if source is not None and source.text else "Google News")[:100]
+            if not title or not link:
+                continue
+
+            digest = hashlib.sha256(link.encode("utf-8")).hexdigest()
+            ext_id = f"GOOGLE_NEWS:{country_code}:{digest}"
+            if db.query(News).filter(News.external_id == ext_id).first():
+                continue
+
+            db.add(News(
+                external_id=ext_id,
+                category="RECENT_NEWS",
+                title=title[:500],
+                content=link,
+                media=media,
+                country=country_code,
+                region=config["label"],
+                published_at=pub_date,
+            ))
+            added += 1
+
+        db.commit()
+        return added
+    except Exception as e:
+        db.rollback()
+        print(f"[WARN] Google News fallback failed for {country_code}: {e}", flush=True)
+        return 0
+
+def sync_recent_country_news(country_code, db, max_records=10):
+    config = RECENT_NEWS_FALLBACKS.get(country_code)
+    if not config:
+        return 0
+
+    return sync_google_news_country(country_code, db, max_records)
+
+def ensure_recent_country_news(country_code, db, stale_days=30):
+    if country_code not in RECENT_NEWS_FALLBACKS:
+        return 0
+
+    latest = (
+        db.query(func.max(News.published_at))
+        .filter(News.country == country_code)
+        .scalar()
+    )
+    if latest and latest >= date.today() - timedelta(days=stale_days):
+        return 0
+
+    return sync_recent_country_news(country_code, db)
 
 def _infer_country_code(item=None, category=None, text=None):
     if category == "USA":
@@ -319,6 +428,11 @@ def run_all_syncs():
     print("[4/8] 빅데이터 ESG 수집 (1~4)")
     c4 = sync_bigdata_esg()
     print(f"-> 완료: 신규 {c4}건")
+    print("[4-1/8] KOR/DEU recent news fallback")
+    c5 = 0
+    for country_code in ("KOR", "DEU"):
+        c5 += sync_recent_country_news(country_code, db)
+    print(f"-> recent fallback added: {c5}")
     backfilled = backfill_news_countries()
     print(f"-> 국가 코드 보정: {backfilled}건")
     print("[5/8] 에너지 소비 지표 수집")

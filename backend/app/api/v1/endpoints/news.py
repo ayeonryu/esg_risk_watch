@@ -30,9 +30,14 @@ def list_news(
     limit: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
+    if country in {"KOR", "DEU"}:
+        scheduler.ensure_recent_country_news(country, db)
+
     query = db.query(News)
     if country:
         query = query.filter(News.country == country)
+    if country in {"KOR", "DEU"}:
+        query = query.filter(News.external_id.notlike("GDELT:%"))
 
     rows = (
         query.order_by(News.published_at.desc(), News.created_at.desc(), News.id.desc())
