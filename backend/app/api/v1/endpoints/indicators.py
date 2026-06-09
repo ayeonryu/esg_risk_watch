@@ -1,0 +1,208 @@
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.models.esg_stat import ESGStat
+from app import scheduler
+
+router = APIRouter()
+
+@router.post("/sync/freedom")
+def sync_freedom_indicator():
+    scheduler.sync_freedom_score()
+    return {"status": "success"}
+
+INDICATOR_META = {
+    "energy_consumption_risk": {
+        "label": "에너지 소비",
+        "unit": "kg oil equivalent",
+        "category": "E",
+        "higher_is_risk": True,
+    },
+    "unemployment_risk": {
+        "label": "실업률",
+        "unit": "%",
+        "category": "S",
+        "higher_is_risk": True,
+    },
+    "life_expectancy_risk": {
+        "label": "기대수명",
+        "unit": "years",
+        "category": "S",
+        "higher_is_risk": False,
+    },
+    "freedom_governance_risk": {
+        "label": "자유지수",
+        "unit": "score",
+        "category": "G",
+        "higher_is_risk": False,
+    },
+}
+
+
+def _risk_level(change_pct: float | None, higher_is_risk: bool) -> str:
+    if change_pct is None:
+        return "low"
+
+    risk_delta = change_pct if higher_is_risk else -change_pct
+    if risk_delta >= 5:
+        return "high"
+    if risk_delta >= 1:
+        return "medium"
+    return "low"
+
+
+def _clamp_score(value: float) -> float:
+    return round(max(0, min(100, value)), 1)
+
+
+def _indicator_score(risk_type: str, latest, previous, higher_is_risk: bool) -> tuple[float, float | None]:
+    if risk_type == "freedom_governance_risk":
+        score = _clamp_score(latest.value)
+        previous_score = _clamp_score(previous.value) if previous else None
+        return score, previous_score
+
+    if not previous or previous.value in (None, 0):
+        return 70.0, None
+
+    change = latest.value - previous.value
+    change_pct = (change / abs(previous.value)) * 100
+    risk_delta = change_pct if higher_is_risk else -change_pct
+    score = _clamp_score(85 - (risk_delta * 5))
+    previous_score = 85.0
+    return score, previous_score
+
+
+def _latest_rows_by_type(country: str, db: Session):
+    rows = (
+        db.query(ESGStat)
+        .filter(ESGStat.country_code == country)
+        .filter(ESGStat.risk_type.in_(INDICATOR_META.keys()))
+        .filter(ESGStat.value.isnot(None))
+        .order_by(ESGStat.risk_type.asc(), ESGStat.year.desc())
+        .all()
+    )
+
+    rows_by_type = {}
+    for row in rows:
+        rows_by_type.setdefault(row.risk_type, []).append(row)
+    return rows_by_type
+
+
+@router.get("/scores")
+def indicator_scores(
+    country: str = Query(..., min_length=2),
+    db: Session = Depends(get_db),
+):
+    rows_by_type = _latest_rows_by_type(country, db)
+
+    category_scores = {"E": [], "S": [], "G": []}
+    previous_category_scores = {"E": [], "S": [], "G": []}
+
+    for risk_type, meta in INDICATOR_META.items():
+        stats = rows_by_type.get(risk_type, [])
+        if not stats:
+            continue
+
+        latest = stats[0]
+        previous = stats[1] if len(stats) > 1 else None
+        score, previous_score = _indicator_score(
+            risk_type,
+            latest,
+            previous,
+            meta["higher_is_risk"],
+        )
+        category = meta["category"]
+        category_scores[category].append(score)
+        if previous_score is not None:
+            previous_category_scores[category].append(previous_score)
+
+    scores = {
+        category: _clamp_score(sum(values) / len(values))
+        for category, values in category_scores.items()
+        if values
+    }
+    previous_scores = {
+        category: _clamp_score(sum(values) / len(values))
+        for category, values in previous_category_scores.items()
+        if values
+    }
+
+    overall = (
+        _clamp_score(sum(scores.values()) / len(scores))
+        if scores
+        else None
+    )
+    previous_overall = (
+        _clamp_score(sum(previous_scores.values()) / len(previous_scores))
+        if previous_scores
+        else None
+    )
+    overall_change = (
+        round(overall - previous_overall, 1)
+        if overall is not None and previous_overall is not None
+        else None
+    )
+
+    return {
+        "country": country,
+        "total": len(scores),
+        "scores": scores,
+        "overall": overall,
+        "previous_overall": previous_overall,
+        "overall_change": overall_change,
+    }
+
+
+@router.get("/summary")
+def indicator_summary(
+    country: str = Query(..., min_length=2),
+    limit: int = Query(4, ge=1, le=10),
+    db: Session = Depends(get_db),
+):
+    rows_by_type = _latest_rows_by_type(country, db)
+
+    items = []
+    for risk_type, meta in INDICATOR_META.items():
+        stats = rows_by_type.get(risk_type, [])
+        if not stats:
+            continue
+
+        latest = stats[0]
+        previous = stats[1] if len(stats) > 1 else None
+        change = latest.value - previous.value if previous else None
+        change_pct = (
+            (change / abs(previous.value)) * 100
+            if previous and previous.value not in (None, 0)
+            else None
+        )
+
+        direction = "flat"
+        if change is not None and change > 0:
+            direction = "up"
+        elif change is not None and change < 0:
+            direction = "down"
+
+        items.append(
+            {
+                "risk_type": risk_type,
+                "label": meta["label"],
+                "category": meta["category"],
+                "value": latest.value,
+                "unit": meta["unit"],
+                "year": latest.year,
+                "previous_value": previous.value if previous else None,
+                "previous_year": previous.year if previous else None,
+                "change": change,
+                "change_pct": change_pct,
+                "direction": direction,
+                "risk_level": _risk_level(change_pct, meta["higher_is_risk"]),
+            }
+        )
+
+    limited_items = items[:limit]
+    return {
+        "country": country,
+        "total": len(limited_items),
+        "items": limited_items,
+    }

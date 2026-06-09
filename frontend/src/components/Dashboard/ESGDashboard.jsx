@@ -16,23 +16,52 @@ const fallbackNewsItems = [
   "현대차그룹, 협력사 ESG 평가 시스템 도입 — 공급망 관리 강화",
 ];
 
-const keyIndicators = [
-  { label: "탄소 배출량", value: "+15%", color: "#4CAF50", alert: true },
-  { label: "재생에너지 비율", value: "38%", color: "#4CAF50" },
-  { label: "여성 임원 비율", value: "22%", color: "#4CAF50" },
-];
-
-const riskSignalsData = [
-  { label: "탄소 초과", level: "high" },
-  { label: "공급망 리스크", level: "medium" },
-  { label: "규정 위반", level: "high" },
-];
-
-const esgScores = { E: 55.5, S: 77.7, G: 33.3 };
 const esgColors = { E: "#4CAF50", S: "#2196F3", G: "#9C27B0" };
 const TABS = ["ALL", "E", "S", "G"];
 
 const getToday = () => new Date().toISOString().slice(0, 10);
+
+function formatIndicatorValue(item) {
+  if (item.change_pct !== null && item.change_pct !== undefined) {
+    const sign = item.direction === "up" ? "+" : item.direction === "down" ? "-" : "";
+    return `${sign}${Math.abs(item.change_pct).toFixed(1)}%`;
+  }
+
+  const value = Number(item.value);
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+
+  const formatted = value.toLocaleString("ko-KR", {
+    maximumFractionDigits: 1,
+  });
+  return item.unit ? `${formatted} ${item.unit}` : formatted;
+}
+
+function indicatorColor(riskLevel) {
+  if (riskLevel === "high") {
+    return "#C62828";
+  }
+  if (riskLevel === "medium") {
+    return "#F57F17";
+  }
+  return "#2E7D32";
+}
+
+function formatScoreValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(1)}%` : "데이터 없음";
+}
+
+function formatScoreChange(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "데이터 없음";
+  }
+
+  const sign = number > 0 ? "+" : "";
+  return `${sign}${number.toFixed(1)}%`;
+}
 
 export default function ESGDashboard({ country, onBack }) {
   const [activeTab, setActiveTab] = useState("ALL");
@@ -43,6 +72,16 @@ export default function ESGDashboard({ country, onBack }) {
   const [endDate, setEndDate] = useState(getToday);
   const [newsItems, setNewsItems] = useState(fallbackNewsItems);
   const [newsStatus, setNewsStatus] = useState("idle");
+  const [indicatorItems, setIndicatorItems] = useState([]);
+  const [indicatorStatus, setIndicatorStatus] = useState("idle");
+  const [riskSignalItems, setRiskSignalItems] = useState([]);
+  const [riskSignalStatus, setRiskSignalStatus] = useState("idle");
+  const [scoreItems, setScoreItems] = useState({});
+  const [scoreSummary, setScoreSummary] = useState({
+    overall: null,
+    overallChange: null,
+  });
+  const [scoreStatus, setScoreStatus] = useState("idle");
 
   const countryName = country?.name || "선택 국가";
   const countryCode = country?.code || COUNTRY_CODE_BY_NAME[countryName];
@@ -99,6 +138,113 @@ export default function ESGDashboard({ country, onBack }) {
     return () => controller.abort();
   }, [countryCode]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadIndicators() {
+      setIndicatorStatus("loading");
+      setRiskSignalStatus("loading");
+
+      try {
+        const params = new URLSearchParams({ limit: "4" });
+        if (countryCode) {
+          params.set("country", countryCode);
+        }
+
+        const response = await fetch(`${API_BASE_URL}/indicators/summary?${params}`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Indicators API failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const items = data.items || [];
+        setIndicatorItems(
+          items.length > 0
+            ? items.map((item) => ({
+                label: item.label,
+                value: formatIndicatorValue(item),
+                color: indicatorColor(item.risk_level),
+              }))
+            : [],
+        );
+        setRiskSignalItems(
+          items
+            .filter((item) => ["high", "medium"].includes(item.risk_level))
+            .map((item) => ({
+              label: `${item.label} ${formatIndicatorValue(item)}`,
+              level: item.risk_level,
+            })),
+        );
+        setIndicatorStatus(items.length > 0 ? "loaded" : "empty");
+        setRiskSignalStatus(
+          items.length === 0
+            ? "empty"
+            : items.some((item) => ["high", "medium"].includes(item.risk_level))
+              ? "loaded"
+              : "no-risk",
+        );
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          console.warn(error);
+          setIndicatorItems([]);
+          setIndicatorStatus("error");
+          setRiskSignalItems([]);
+          setRiskSignalStatus("error");
+        }
+      }
+    }
+
+    loadIndicators();
+
+    return () => controller.abort();
+  }, [countryCode]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadScores() {
+      setScoreStatus("loading");
+
+      try {
+        const params = new URLSearchParams();
+        if (countryCode) {
+          params.set("country", countryCode);
+        }
+
+        const response = await fetch(`${API_BASE_URL}/indicators/scores?${params}`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Scores API failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const scores = data.scores || {};
+        setScoreItems(scores);
+        setScoreSummary({
+          overall: data.overall,
+          overallChange: data.overall_change,
+        });
+        setScoreStatus(Object.keys(scores).length > 0 ? "loaded" : "empty");
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          console.warn(error);
+          setScoreItems({});
+          setScoreSummary({ overall: null, overallChange: null });
+          setScoreStatus("error");
+        }
+      }
+    }
+
+    loadScores();
+
+    return () => controller.abort();
+  }, [countryCode]);
+
   const handleStartDateChange = (e) => {
     const newStartDate = e.target.value;
     setStartDate(newStartDate);
@@ -109,7 +255,11 @@ export default function ESGDashboard({ country, onBack }) {
   };
 
   const filteredScores =
-    activeTab === "ALL" ? esgScores : { [activeTab]: esgScores[activeTab] };
+    activeTab === "ALL"
+      ? scoreItems
+      : scoreItems[activeTab] !== undefined
+        ? { [activeTab]: scoreItems[activeTab] }
+        : {};
 
   return (
     <div
@@ -396,12 +546,51 @@ export default function ESGDashboard({ country, onBack }) {
         >
           <Card title="주요 변동 지표" style={{ padding: "12px 10px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {keyIndicators.map((ind, i) => (
+              {indicatorStatus === "loading" && (
+                <div
+                  style={{
+                    color: "#777",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "3px 10px",
+                  }}
+                >
+                  지표를 불러오는 중입니다...
+                </div>
+              )}
+
+              {indicatorStatus === "empty" && (
+                <div
+                  style={{
+                    color: "#777",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "3px 10px",
+                  }}
+                >
+                  실제 지표 데이터가 없습니다.
+                </div>
+              )}
+
+              {indicatorStatus === "error" && (
+                <div
+                  style={{
+                    color: "#C62828",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "3px 10px",
+                  }}
+                >
+                  실제 지표 데이터를 불러오지 못했습니다.
+                </div>
+              )}
+
+              {indicatorItems.map((ind, i) => (
                 <div
                   key={i}
                   style={{
                     background: "#E8F5E9",
-                    color: "#2E7D32",
+                    color: ind.color || "#2E7D32",
                     borderRadius: 20,
                     padding: "3px 10px",
                     fontSize: 11,
@@ -418,6 +607,24 @@ export default function ESGDashboard({ country, onBack }) {
 
           <Card title="ESG 점수" style={{ padding: "12px 10px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {scoreStatus === "loading" && (
+                <div style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
+                  ESG 점수를 불러오는 중입니다...
+                </div>
+              )}
+
+              {scoreStatus === "empty" && (
+                <div style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
+                  실제 ESG 점수 데이터가 없습니다.
+                </div>
+              )}
+
+              {scoreStatus === "error" && (
+                <div style={{ color: "#C62828", fontSize: 11, fontWeight: 600 }}>
+                  실제 ESG 점수를 불러오지 못했습니다.
+                </div>
+              )}
+
               {Object.entries(filteredScores).map(([key, val]) => (
                 <div key={key}>
                   <div
@@ -432,7 +639,7 @@ export default function ESGDashboard({ country, onBack }) {
                       {key}
                     </span>
                     <span style={{ fontWeight: 600, color: "#333" }}>
-                      {val}%
+                      {formatScoreValue(val)}
                     </span>
                   </div>
 
@@ -446,7 +653,7 @@ export default function ESGDashboard({ country, onBack }) {
                   >
                     <div
                       style={{
-                        width: `${val}%`,
+                        width: `${Number(val) || 0}%`,
                         height: "100%",
                         background: esgColors[key],
                         borderRadius: 0,
@@ -467,8 +674,18 @@ export default function ESGDashboard({ country, onBack }) {
             gap: 10,
           }}
         >
-          <StatCard label="ESG 종합 점수" value="77.7%" valueColor="#1A237E" />
-          <StatCard label="전월 대비 변화" value="+3.3%" valueColor="#2E7D32" />
+          <StatCard
+            label="ESG 종합 점수"
+            value={formatScoreValue(scoreSummary.overall)}
+            valueColor="#1A237E"
+          />
+          <StatCard
+            label="전월 대비 변화"
+            value={formatScoreChange(scoreSummary.overallChange)}
+            valueColor={
+              Number(scoreSummary.overallChange) < 0 ? "#C62828" : "#2E7D32"
+            }
+          />
 
           <Card
             style={{
@@ -490,7 +707,31 @@ export default function ESGDashboard({ country, onBack }) {
             </p>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {riskSignalsData.map((sig, i) => (
+              {riskSignalStatus === "loading" && (
+                <div style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
+                  위험 신호를 불러오는 중입니다...
+                </div>
+              )}
+
+              {riskSignalStatus === "empty" && (
+                <div style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
+                  실제 위험 신호 데이터가 없습니다.
+                </div>
+              )}
+
+              {riskSignalStatus === "no-risk" && (
+                <div style={{ color: "#2E7D32", fontSize: 11, fontWeight: 600 }}>
+                  현재 주요 위험 신호가 없습니다.
+                </div>
+              )}
+
+              {riskSignalStatus === "error" && (
+                <div style={{ color: "#C62828", fontSize: 11, fontWeight: 600 }}>
+                  실제 위험 신호를 불러오지 못했습니다.
+                </div>
+              )}
+
+              {riskSignalItems.map((sig, i) => (
                 <div
                   key={i}
                   style={{

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from datetime import datetime
@@ -10,7 +11,7 @@ def health_check(db: Session = Depends(get_db)):
     """API 헬스 체크"""
     try:
         # DB 연결 확인
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         db_status = "healthy"
     except Exception as e:
         db_status = f"unhealthy: {str(e)}"

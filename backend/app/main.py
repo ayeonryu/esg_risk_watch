@@ -4,7 +4,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.session import engine, Base
-from app.api.v1.endpoints import news, briefings, countries, risks, trends, health
+from app.api.v1.endpoints import news, briefings, countries, risks, trends, health, indicators
 from app import scheduler
 
 Base.metadata.create_all(bind=engine)
@@ -37,6 +37,7 @@ app.include_router(briefings.router, prefix="/api/v1/briefings", tags=["briefing
 app.include_router(countries.router, prefix="/api/v1/countries", tags=["countries"])
 app.include_router(risks.router, prefix="/api/v1/risks", tags=["risks"])
 app.include_router(trends.router, prefix="/api/v1/trends", tags=["trends"])
+app.include_router(indicators.router, prefix="/api/v1/indicators", tags=["indicators"])
 
 @app.get("/")
 def read_root():

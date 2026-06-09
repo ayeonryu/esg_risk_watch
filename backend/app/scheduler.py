@@ -3,17 +3,26 @@ import math
 import hashlib
 import json
 import csv
+import io
+import zipfile
 from io import StringIO
 from datetime import datetime, date
 from app.db.session import SessionLocal
 from app.models.news import News
 from app.models.esg_stat import ESGStat
+from app.core.config import SERVICE_KEY
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
-SERVICE_KEY = "43b016f2295f780a65665aa1587a7f80e7f3be918cfacf883a66488069cd075c"
 current_year = datetime.now().year
+TARGET_COUNTRIES = {"KOR", "USA", "CHN", "DEU"}
+COUNTRY_KEYWORDS = {
+    "KOR": ("대한민국", "한국", "서울", "부산", "Korea"),
+    "USA": ("미국", "워싱턴", "뉴욕", "실리콘밸리", "달라스", "로스앤젤레스", "시카고", "United States", "USA"),
+    "CHN": ("중국", "베이징", "상하이", "광저우", "선전", "청두", "China"),
+    "DEU": ("독일", "프랑크푸르트", "뮌헨", "함부르크", "베를린", "Germany", "Deutschland"),
+}
 
 BIGDATA_CONFIGS = [
     {"url": "https://api.odcloud.kr/api/15097922/v1/uddi:97ce0eff-7786-4ace-ac15-aec8d947112a", "year_min": 2020, "year_max": current_year, "name": "NEWS_BIGDATA_ESG_1"},
@@ -31,6 +40,24 @@ def _parse_bigdata_date(value):
         for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d"):
             try: return datetime.strptime(candidate, fmt).date()
             except ValueError: continue
+    return None
+
+def _infer_country_code(item=None, category=None, text=None):
+    if category == "USA":
+        return "USA"
+    if category == "CHINA":
+        return "CHN"
+
+    parts = []
+    if item:
+        parts.extend(str(value) for value in item.values() if value is not None)
+    if text:
+        parts.append(str(text))
+    haystack = " ".join(parts)
+
+    for country_code, keywords in COUNTRY_KEYWORDS.items():
+        if any(keyword in haystack for keyword in keywords):
+            return country_code
     return None
 
 def fetch_all_news(url, category, db):
@@ -82,7 +109,9 @@ def fetch_all_news(url, category, db):
                     db.add(News(
                         external_id=ext_id, category=category,
                         title=item.get("nttSj") or "No Title", content=item.get("smmarCn") or "",
-                        media=item.get("kbc") or "KOTRA", published_at=item.get("regDt")
+                        media=item.get("kbc") or "KOTRA",
+                        country=_infer_country_code(item, category),
+                        published_at=_parse_bigdata_date(item.get("regDt"))
                     ))
                     added += 1
                 db.commit()
@@ -143,83 +172,134 @@ def sync_bigdata_esg():
         db.close()
 
 def sync_worldbank(indicator_code, category, risk_type):
-    import requests
-    from datetime import datetime
     db = SessionLocal()
     try:
-        current_year = datetime.now().year
-        url = f"https://api.worldbank.org/v2/country/all/indicator/{indicator_code}"
-        res = requests.get(url, params={"format": "json", "per_page": 300, "date": f"{current_year-5}:{current_year}"}, timeout=20)
-        
-        if res.status_code != 200:
-            return
-            
-        try:
-            data = res.json()
-        except Exception:
-            return
-            
-        if not isinstance(data, list) or len(data) < 2: 
-            return
-            
-        target_countries = {"KOR", "USA", "CHN"}
-        for item in data[1]:
-            if not isinstance(item, dict):
+        url = f"https://api.worldbank.org/v2/en/indicator/{indicator_code}?downloadformat=csv"
+        res = requests.get(url, timeout=60)
+        res.raise_for_status()
+
+        with zipfile.ZipFile(io.BytesIO(res.content)) as archive:
+            csv_name = next(
+                name
+                for name in archive.namelist()
+                if name.startswith("API_") and name.endswith(".csv")
+            )
+            text = archive.read(csv_name).decode("utf-8-sig")
+
+        lines = text.splitlines()
+        header_index = next(
+            index for index, line in enumerate(lines) if line.startswith('"Country Name"')
+        )
+        reader = csv.DictReader(lines[header_index:])
+
+        for row in reader:
+            country_code = row.get("Country Code")
+            if country_code not in TARGET_COUNTRIES:
                 continue
-            val = item.get("value")
-            if val is None: 
-                continue
-            c_code = item.get("countryiso3code")
-            if c_code not in target_countries:
-                continue
-            db.add(ESGStat(
-                category=category, risk_type=risk_type, country=item.get("country", {}).get("value"),
-                country_code=c_code, indicator=item.get("indicator", {}).get("value"),
-                indicator_code=indicator_code, year=int(item.get("date")), value=float(val)
-            ))
+
+            year_values = []
+            for year, value in row.items():
+                if year.isdigit() and value:
+                    year_values.append((int(year), float(value)))
+
+            for year, value in sorted(year_values, reverse=True)[:6]:
+                existing = (
+                    db.query(ESGStat)
+                    .filter(
+                        ESGStat.country_code == country_code,
+                        ESGStat.risk_type == risk_type,
+                        ESGStat.indicator_code == indicator_code,
+                        ESGStat.year == year,
+                    )
+                    .first()
+                )
+                if existing:
+                    existing.category = category
+                    existing.country = row.get("Country Name")
+                    existing.indicator = row.get("Indicator Name")
+                    existing.value = value
+                    continue
+
+                db.add(ESGStat(
+                    category=category,
+                    risk_type=risk_type,
+                    country=row.get("Country Name"),
+                    country_code=country_code,
+                    indicator=row.get("Indicator Name"),
+                    indicator_code=indicator_code,
+                    year=year,
+                    value=value,
+                ))
         db.commit()
     except Exception as e:
+        db.rollback()
         print(f"[오류] 월드뱅크 지표({indicator_code}) 수집 무시: {e}", flush=True)
     finally:
-        db.close()   
-        db = SessionLocal()
+        db.close()
+
+def backfill_news_countries():
+    db = SessionLocal()
+    updated = 0
     try:
-        url = f"https://api.worldbank.org/v2/country/all/indicator/{indicator_code}"
-        res = requests.get(url, params={"format": "json", "per_page": 300, "date": f"{current_year-5}:{current_year}"}, timeout=20)
-        data = res.json()
-        if len(data) < 2: return
-        
-        target_countries = {"KOR", "USA", "CHN"}
-        
-        for item in data[1]:
-            val = item.get("value")
-            if val is None: continue
-            
-            c_code = item.get("countryiso3code")
-            if c_code not in target_countries:
-                continue
-                
-            db.add(ESGStat(
-                category=category, risk_type=risk_type, country=item.get("country", {}).get("value"),
-                country_code=c_code, indicator=item.get("indicator", {}).get("value"),
-                indicator_code=indicator_code, year=int(item.get("date")), value=float(val)
-            ))
+        rows = db.query(News).filter(News.country.is_(None)).all()
+        for row in rows:
+            country_code = _infer_country_code(
+                category=row.category,
+                text=" ".join(
+                    str(value)
+                    for value in (row.title, row.content, row.media, row.region)
+                    if value
+                ),
+            )
+            if country_code:
+                row.country = country_code
+                updated += 1
         db.commit()
-    finally: db.close()
+        return updated
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 def sync_freedom_score():
     db = SessionLocal()
     try:
-        url = "https://raw.githubusercontent.com/datasets/freedom-in-the-world/master/data/freedom-house-scores.csv"
-        res = requests.get(url, timeout=20)
+        url = "https://ourworldindata.org/grapher/freedom-score-fh.csv?v=1&csvType=full&useColumnShortNames=false"
+        res = requests.get(
+            url,
+            headers={"User-Agent": "ESG Risk Watch data sync"},
+            timeout=20,
+        )
+        res.raise_for_status()
         reader = csv.DictReader(StringIO(res.text))
-        countries = {"South Korea": "KOR", "United States": "USA", "China": "CHN"}
+        target_codes = {"KOR", "USA", "CHN", "DEU"}
         for row in reader:
-            entity = row.get("Country/Territory")
-            if entity in countries:
+            country_code = row.get("Code")
+            score = row.get("Total democracy score")
+            if country_code in target_codes and score not in (None, ""):
+                entity = row.get("Entity")
+                year = int(row.get("Year"))
+                value = float(score)
+                existing = (
+                    db.query(ESGStat)
+                    .filter(
+                        ESGStat.country_code == country_code,
+                        ESGStat.risk_type == "freedom_governance_risk",
+                        ESGStat.indicator_code == "freedom-score-fh",
+                        ESGStat.year == year,
+                    )
+                    .first()
+                )
+                if existing:
+                    existing.category = "G"
+                    existing.country = entity
+                    existing.indicator = "Freedom House score"
+                    existing.value = value
+                    continue
                 db.add(ESGStat(
-                    category="G", risk_type="freedom_governance_risk", country=entity, country_code=countries[entity],
-                    indicator="Freedom House score", indicator_code="freedom-score-fh", year=int(row.get("Edition")),
-                    value=float(row.get("Total Score and Status").split()[0])
+                    category="G", risk_type="freedom_governance_risk", country=entity, country_code=country_code,
+                    indicator="Freedom House score", indicator_code="freedom-score-fh", year=year,
+                    value=value
                 ))
         db.commit()
     finally: db.close()
@@ -239,6 +319,8 @@ def run_all_syncs():
     print("[4/8] 빅데이터 ESG 수집 (1~4)")
     c4 = sync_bigdata_esg()
     print(f"-> 완료: 신규 {c4}건")
+    backfilled = backfill_news_countries()
+    print(f"-> 국가 코드 보정: {backfilled}건")
     print("[5/8] 에너지 소비 지표 수집")
     sync_worldbank("EG.USE.PCAP.KG.OE", "E", "energy_consumption_risk")
     print("[6/8] 실업률 지표 수집")

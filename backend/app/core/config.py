@@ -1,7 +1,10 @@
-# app/core/config.py
+import os
 from datetime import datetime
+from dotenv import load_dotenv
 
-SERVICE_KEY = "43b016f2295f780a65665aa1587a7f80e7f3be918cfacf883a66488069cd075c"
+load_dotenv()
+
+SERVICE_KEY = os.getenv("SERVICE_KEY", "43b016f2295f780a65665aa1587a7f80e7f3be918cfacf883a66488069cd075c")
 DC_API_KEY = "3bRAYyaN6gBdO7esp4GkyRlzYETJcXXuGkiAM6fRPf77hOvs"
 
 BIGDATA_CONFIGS = [
