@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 import os
+from app.models.news import News
+from app.models.esg_stat import ESGStat
 import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

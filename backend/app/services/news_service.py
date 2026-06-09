@@ -1,4 +1,3 @@
-# app/services/news_service.py
 import requests
 import math
 import hashlib
@@ -37,12 +36,31 @@ def fetch_all_news_logic(url: str, category: str, db):
                 ext_id = str(item.get("nttSn") or item.get("nttSj"))
                 if news_repository.get_news_by_external_id(db, ext_id): continue
                 
+                raw_url = item.get("urlAddr") or ""
+                if raw_url:
+                    if "actionKotraNewsDetail.do" in raw_url:
+                        raw_url = raw_url.replace("actionKotraNewsDetail.do", "actionKotraBoardDetail.do")
+                    if "nttSn=" in raw_url and "pNttSn=" not in raw_url:
+                        raw_url = raw_url.replace("nttSn=", "pNttSn=")
+                    
+                    if not raw_url.startswith("http"):
+                        news_url = f"https://dream.kotra.or.kr{raw_url}" if raw_url.startswith("/") else f"https://dream.kotra.or.kr/{raw_url}"
+                    else:
+                        news_url = raw_url
+                else:
+                    ntt_sn = item.get("nttSn")
+                    bbs_sn = item.get("bbsSn")
+                    news_url = f"https://dream.kotra.or.kr/kotranews/cms/news/actionKotraBoardDetail.do?pNttSn={ntt_sn}"
+                    if bbs_sn:
+                        news_url += f"&bbsSn={bbs_sn}"
+                
                 new_news = News(
                     external_id=ext_id, category=category,
                     title=item.get("nttSj") or "No Title", 
                     content=item.get("smmarCn") or "",
                     media=item.get("kbc") or "KOTRA", 
-                    published_at=_parse_date(item.get("regDt"))
+                    published_at=_parse_date(item.get("regDt")),
+                    url=news_url
                 )
                 news_repository.create_news_item(db, new_news)
                 added += 1

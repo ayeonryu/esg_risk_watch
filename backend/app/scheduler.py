@@ -5,6 +5,8 @@ import json
 import csv
 import io
 import zipfile
+import time
+import urllib.parse
 from io import StringIO
 from datetime import datetime, date
 from app.db.session import SessionLocal
@@ -47,21 +49,18 @@ def _infer_country_code(item=None, category=None, text=None):
         return "USA"
     if category == "CHINA":
         return "CHN"
-
     parts = []
     if item:
         parts.extend(str(value) for value in item.values() if value is not None)
     if text:
         parts.append(str(text))
     haystack = " ".join(parts)
-
     for country_code, keywords in COUNTRY_KEYWORDS.items():
         if any(keyword in haystack for keyword in keywords):
             return country_code
     return None
 
 def fetch_all_news(url, category, db):
-    import time
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -76,42 +75,65 @@ def fetch_all_news(url, category, db):
                 print(f"[{category}] 현재 {page} / {max_page} 페이지 수집 중...", flush=True)
                 time.sleep(0.3)
                 res = requests.get(url, params={"serviceKey": SERVICE_KEY, "type": "json", "numOfRows": 10, "pageNo": page}, headers=headers, timeout=5)
-                
                 if res.status_code != 200:
                     page += 1
                     continue
-                    
                 json_data = res.json()
                 response_obj = json_data.get("response") or {}
                 body_obj = response_obj.get("body") or {}
                 item_list_obj = body_obj.get("itemList") or {}
-                
                 if isinstance(item_list_obj, dict):
                     items = item_list_obj.get("item", [])
                 else:
                     items = []
-                    
                 if not items:
                     page += 1
                     continue
-                    
-                if isinstance(items, dict): 
+                if isinstance(items, dict):
                     items = [items]
-                    
                 for item in items:
-                    if not isinstance(item, dict): 
+                    if not isinstance(item, dict):
                         continue
                     ext_id = str(item.get("nttSn") or item.get("nttSj") or "")
-                    if not ext_id: 
+                    if not ext_id:
                         continue
-                    if db.query(News).filter(News.external_id == ext_id).first(): 
+                    if db.query(News).filter(News.external_id == ext_id).first():
                         continue
+                    
+                    ntt_sn = item.get("nttSn")
+                    if ntt_sn:
+                        news_url = f"https://dream.kotra.or.kr/kotranews/cms/news/actionKotraBoardDetail.do?SITE_NO=3&MENU_ID=290&CONTENTS_NO=1&bbsGbn=464&bbsSn=464&pNttSn={ntt_sn}"
+                    else:
+                        raw_url = item.get("urlAddr") or ""
+                        if raw_url:
+                            if "pNttSn=" in raw_url:
+                                parts = raw_url.split("pNttSn=")
+                                sn_val = parts[1].split("&")[0] if "&" in parts[1] else parts[1]
+                                news_url = f"https://dream.kotra.or.kr/kotranews/cms/news/actionKotraBoardDetail.do?SITE_NO=3&MENU_ID=290&CONTENTS_NO=1&bbsGbn=464&bbsSn=464&pNttSn={sn_val}"
+                            elif "nttSn=" in raw_url:
+                                parts = raw_url.split("nttSn=")
+                                sn_val = parts[1].split("&")[0] if "&" in parts[1] else parts[1]
+                                news_url = f"https://dream.kotra.or.kr/kotranews/cms/news/actionKotraBoardDetail.do?SITE_NO=3&MENU_ID=290&CONTENTS_NO=1&bbsGbn=464&bbsSn=464&pNttSn={sn_val}"
+                            else:
+                                news_url = raw_url if raw_url.startswith("http") else f"https://dream.kotra.or.kr{raw_url}"
+                        else:
+                            news_url = ""
+
+                    if "news.joins.com" in news_url:
+                        news_url = ""
+
+                    if not news_url and item.get("nttSj"):
+                        news_url = f"https://search.naver.com/search.naver?where=news&query={urllib.parse.quote(item.get('nttSj'))}"
+
                     db.add(News(
-                        external_id=ext_id, category=category,
-                        title=item.get("nttSj") or "No Title", content=item.get("smmarCn") or "",
+                        external_id=ext_id,
+                        category=category,
+                        title=item.get("nttSj") or "No Title",
+                        content=item.get("smmarCn") or "",
                         media=item.get("kbc") or "KOTRA",
                         country=_infer_country_code(item, category),
-                        published_at=_parse_bigdata_date(item.get("regDt"))
+                        published_at=_parse_bigdata_date(item.get("regDt")),
+                        url=news_url
                     ))
                     added += 1
                 db.commit()
@@ -123,6 +145,8 @@ def fetch_all_news(url, category, db):
     except Exception as e:
         print(f"[오류] {category} API 에러: {e}", flush=True)
         return 0
+    finally:
+        db.close()
 
 def sync_bigdata_esg():
     db = SessionLocal()
@@ -137,7 +161,6 @@ def sync_bigdata_esg():
                 items = data.get("data", [])
                 if not items:
                     break
-
                 new_rows = []
                 for item in items:
                     published_at = _parse_bigdata_date(item.get("일자"))
@@ -145,27 +168,35 @@ def sync_bigdata_esg():
                         continue
                     digest = hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()
                     ext_id = f"{source_name}:{digest}"
+                    
+                    title = item.get("제목") or "No Title"
+                    news_url = item.get("URL") or item.get("url") or item.get("원본주소") or item.get("링크") or item.get("urlAddr") or item.get("링크주소") or item.get("원문링크") or item.get("newsUrl") or ""
+                    
+                    if "news.joins.com" in news_url:
+                        news_url = ""
+                    
+                    if not news_url and title != "No Title":
+                        news_url = f"https://search.naver.com/search.naver?where=news&query={urllib.parse.quote(title)}"
+
                     new_rows.append({
                         "external_id": ext_id,
                         "category": source_name,
-                        "title": item.get("제목") or "No Title",
+                        "title": title,
                         "content": item.get("본문") or "",
                         "media": item.get("언론사") or "ODcloud",
                         "published_at": published_at,
+                        "url": news_url
                     })
-
                 if new_rows:
                     stmt = mysql_insert(News).values(new_rows).prefix_with("IGNORE")
                     result = db.execute(stmt)
                     db.commit()
                     added += result.rowcount
                     total_added += result.rowcount
-
                 total_count = data.get("totalCount", 0)
                 if not total_count or page * 100 >= total_count:
                     break
                 page += 1
-
             print(f"[{source_name}] 완료: 신규 {added}건")
         return total_added
     finally:
@@ -177,7 +208,6 @@ def sync_worldbank(indicator_code, category, risk_type):
         url = f"https://api.worldbank.org/v2/en/indicator/{indicator_code}?downloadformat=csv"
         res = requests.get(url, timeout=60)
         res.raise_for_status()
-
         with zipfile.ZipFile(io.BytesIO(res.content)) as archive:
             csv_name = next(
                 name
@@ -185,23 +215,19 @@ def sync_worldbank(indicator_code, category, risk_type):
                 if name.startswith("API_") and name.endswith(".csv")
             )
             text = archive.read(csv_name).decode("utf-8-sig")
-
         lines = text.splitlines()
         header_index = next(
             index for index, line in enumerate(lines) if line.startswith('"Country Name"')
         )
         reader = csv.DictReader(lines[header_index:])
-
         for row in reader:
             country_code = row.get("Country Code")
             if country_code not in TARGET_COUNTRIES:
                 continue
-
             year_values = []
             for year, value in row.items():
                 if year.isdigit() and value:
                     year_values.append((int(year), float(value)))
-
             for year, value in sorted(year_values, reverse=True)[:6]:
                 existing = (
                     db.query(ESGStat)
@@ -219,7 +245,6 @@ def sync_worldbank(indicator_code, category, risk_type):
                     existing.indicator = row.get("Indicator Name")
                     existing.value = value
                     continue
-
                 db.add(ESGStat(
                     category=category,
                     risk_type=risk_type,
@@ -261,6 +286,7 @@ def backfill_news_countries():
         raise
     finally:
         db.close()
+
 def sync_freedom_score():
     db = SessionLocal()
     try:
@@ -272,11 +298,10 @@ def sync_freedom_score():
         )
         res.raise_for_status()
         reader = csv.DictReader(StringIO(res.text))
-        target_codes = {"KOR", "USA", "CHN", "DEU"}
         for row in reader:
             country_code = row.get("Code")
             score = row.get("Total democracy score")
-            if country_code in target_codes and score not in (None, ""):
+            if country_code in TARGET_COUNTRIES and score not in (None, ""):
                 entity = row.get("Entity")
                 year = int(row.get("Year"))
                 value = float(score)
@@ -302,7 +327,8 @@ def sync_freedom_score():
                     value=value
                 ))
         db.commit()
-    finally: db.close()
+    finally:
+        db.close()
 
 def run_all_syncs():
     db = SessionLocal()
