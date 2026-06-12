@@ -84,9 +84,75 @@ def _latest_rows_by_type(country: str, db: Session):
     )
 
     rows_by_type = {}
+    seen_years_by_type = {}
     for row in rows:
+        if row.risk_type == "energy_consumption_risk" and row.value == 0:
+            continue
+
+        seen_years = seen_years_by_type.setdefault(row.risk_type, set())
+        if row.year in seen_years:
+            continue
+
+        seen_years.add(row.year)
         rows_by_type.setdefault(row.risk_type, []).append(row)
     return rows_by_type
+
+
+def _rows_by_type_and_year(country: str, db: Session):
+    rows = (
+        db.query(ESGStat)
+        .filter(ESGStat.country_code == country)
+        .filter(ESGStat.risk_type.in_(INDICATOR_META.keys()))
+        .filter(ESGStat.value.isnot(None))
+        .order_by(ESGStat.risk_type.asc(), ESGStat.year.desc(), ESGStat.id.desc())
+        .all()
+    )
+
+    rows_by_type = {}
+    seen_years_by_type = {}
+    for row in rows:
+        if row.risk_type == "energy_consumption_risk" and row.value == 0:
+            continue
+
+        seen_years = seen_years_by_type.setdefault(row.risk_type, set())
+        if row.year in seen_years:
+            continue
+
+        seen_years.add(row.year)
+        rows_by_type.setdefault(row.risk_type, {})[row.year] = row
+    return rows_by_type
+
+
+def _previous_year_row(rows_by_year: dict, year: int):
+    previous_years = [candidate for candidate in rows_by_year if candidate < year]
+    if not previous_years:
+        return None
+    return rows_by_year[max(previous_years)]
+
+
+def _category_scores_for_year(rows_by_type: dict, year: int):
+    category_scores = {"E": [], "S": [], "G": []}
+
+    for risk_type, meta in INDICATOR_META.items():
+        rows_by_year = rows_by_type.get(risk_type, {})
+        current = rows_by_year.get(year)
+        if not current:
+            continue
+
+        previous = _previous_year_row(rows_by_year, year)
+        score, _ = _indicator_score(
+            risk_type,
+            current,
+            previous,
+            meta["higher_is_risk"],
+        )
+        category_scores[meta["category"]].append(score)
+
+    return {
+        category: _clamp_score(sum(values) / len(values))
+        for category, values in category_scores.items()
+        if values
+    }
 
 
 @router.get("/scores")
@@ -127,6 +193,11 @@ def indicator_scores(
         for category, values in previous_category_scores.items()
         if values
     }
+    score_changes = {
+        category: round(scores[category] - previous_scores[category], 1)
+        for category in scores
+        if category in previous_scores
+    }
 
     overall = (
         _clamp_score(sum(scores.values()) / len(scores))
@@ -148,9 +219,47 @@ def indicator_scores(
         "country": country,
         "total": len(scores),
         "scores": scores,
+        "previous_scores": previous_scores,
+        "score_changes": score_changes,
         "overall": overall,
         "previous_overall": previous_overall,
         "overall_change": overall_change,
+    }
+
+
+@router.get("/score-trend")
+def score_trend(
+    country: str = Query(..., min_length=2),
+    limit: int = Query(6, ge=2, le=20),
+    db: Session = Depends(get_db),
+):
+    rows_by_type = _rows_by_type_and_year(country, db)
+    years = sorted(
+        {
+            year
+            for rows_by_year in rows_by_type.values()
+            for year in rows_by_year
+        }
+    )
+
+    items = []
+    for year in years:
+        scores = _category_scores_for_year(rows_by_type, year)
+        if not all(category in scores for category in ("E", "S", "G")):
+            continue
+
+        overall = _clamp_score(sum(scores.values()) / len(scores))
+        items.append({
+            "year": year,
+            "overall": overall,
+            "scores": scores,
+        })
+
+    limited_items = items[-limit:]
+    return {
+        "country": country,
+        "total": len(limited_items),
+        "items": limited_items,
     }
 
 

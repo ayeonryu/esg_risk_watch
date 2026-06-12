@@ -17,6 +17,7 @@ const fallbackNewsItems = [
 ];
 
 const esgColors = { E: "#4CAF50", S: "#2196F3", G: "#9C27B0" };
+const esgLabels = { E: "환경", S: "사회", G: "지배구조" };
 const TABS = ["ALL", "E", "S", "G"];
 
 const getToday = () => new Date().toISOString().slice(0, 10);
@@ -63,6 +64,14 @@ function formatScoreChange(value) {
   return `${sign}${number.toFixed(1)}%`;
 }
 
+function scoreChangeColor(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "#777";
+  }
+  return number < 0 ? "#C62828" : "#2E7D32";
+}
+
 export default function ESGDashboard({ country, onBack }) {
   const [activeTab, setActiveTab] = useState("ALL");
   const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
@@ -77,11 +86,16 @@ export default function ESGDashboard({ country, onBack }) {
   const [riskSignalItems, setRiskSignalItems] = useState([]);
   const [riskSignalStatus, setRiskSignalStatus] = useState("idle");
   const [scoreItems, setScoreItems] = useState({});
+  const [previousScoreItems, setPreviousScoreItems] = useState({});
+  const [scoreChanges, setScoreChanges] = useState({});
   const [scoreSummary, setScoreSummary] = useState({
     overall: null,
+    previousOverall: null,
     overallChange: null,
   });
   const [scoreStatus, setScoreStatus] = useState("idle");
+  const [scoreTrendItems, setScoreTrendItems] = useState([]);
+  const [scoreTrendStatus, setScoreTrendStatus] = useState("idle");
 
   const countryName = country?.name || "선택 국가";
   const countryCode = country?.code || COUNTRY_CODE_BY_NAME[countryName];
@@ -141,6 +155,44 @@ export default function ESGDashboard({ country, onBack }) {
   useEffect(() => {
     const controller = new AbortController();
 
+    async function loadScoreTrend() {
+      setScoreTrendStatus("loading");
+
+      try {
+        const params = new URLSearchParams({ limit: "6" });
+        if (countryCode) {
+          params.set("country", countryCode);
+        }
+
+        const response = await fetch(`${API_BASE_URL}/indicators/score-trend?${params}`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Score trend API failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const items = data.items || [];
+        setScoreTrendItems(items);
+        setScoreTrendStatus(items.length > 0 ? "loaded" : "empty");
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          console.warn(error);
+          setScoreTrendItems([]);
+          setScoreTrendStatus("error");
+        }
+      }
+    }
+
+    loadScoreTrend();
+
+    return () => controller.abort();
+  }, [countryCode]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
     async function loadIndicators() {
       setIndicatorStatus("loading");
       setRiskSignalStatus("loading");
@@ -166,6 +218,7 @@ export default function ESGDashboard({ country, onBack }) {
             ? items.map((item) => ({
                 label: item.label,
                 value: formatIndicatorValue(item),
+                category: item.category,
                 color: indicatorColor(item.risk_level),
               }))
             : [],
@@ -176,6 +229,7 @@ export default function ESGDashboard({ country, onBack }) {
             .map((item) => ({
               label: `${item.label} ${formatIndicatorValue(item)}`,
               level: item.risk_level,
+              category: item.category,
             })),
         );
         setIndicatorStatus(items.length > 0 ? "loaded" : "empty");
@@ -225,8 +279,11 @@ export default function ESGDashboard({ country, onBack }) {
         const data = await response.json();
         const scores = data.scores || {};
         setScoreItems(scores);
+        setPreviousScoreItems(data.previous_scores || {});
+        setScoreChanges(data.score_changes || {});
         setScoreSummary({
           overall: data.overall,
+          previousOverall: data.previous_overall,
           overallChange: data.overall_change,
         });
         setScoreStatus(Object.keys(scores).length > 0 ? "loaded" : "empty");
@@ -234,7 +291,9 @@ export default function ESGDashboard({ country, onBack }) {
         if (error.name !== "AbortError") {
           console.warn(error);
           setScoreItems({});
-          setScoreSummary({ overall: null, overallChange: null });
+          setPreviousScoreItems({});
+          setScoreChanges({});
+          setScoreSummary({ overall: null, previousOverall: null, overallChange: null });
           setScoreStatus("error");
         }
       }
@@ -260,6 +319,24 @@ export default function ESGDashboard({ country, onBack }) {
       : scoreItems[activeTab] !== undefined
         ? { [activeTab]: scoreItems[activeTab] }
         : {};
+  const filteredIndicatorItems =
+    activeTab === "ALL"
+      ? indicatorItems
+      : indicatorItems.filter((item) => item.category === activeTab);
+  const filteredRiskSignalItems =
+    activeTab === "ALL"
+      ? riskSignalItems
+      : riskSignalItems.filter((item) => item.category === activeTab);
+  const selectedScoreLabel =
+    activeTab === "ALL" ? "ESG 종합" : `${activeTab} ${esgLabels[activeTab]}`;
+  const selectedScore =
+    activeTab === "ALL" ? scoreSummary.overall : scoreItems[activeTab];
+  const selectedPreviousScore =
+    activeTab === "ALL" ? scoreSummary.previousOverall : previousScoreItems[activeTab];
+  const selectedScoreChange =
+    activeTab === "ALL" ? scoreSummary.overallChange : scoreChanges[activeTab];
+  const selectedScoreColor =
+    activeTab === "ALL" ? "#1A237E" : esgColors[activeTab] || "#1A237E";
 
   return (
     <div
@@ -585,7 +662,20 @@ export default function ESGDashboard({ country, onBack }) {
                 </div>
               )}
 
-              {indicatorItems.map((ind, i) => (
+              {indicatorStatus === "loaded" && filteredIndicatorItems.length === 0 && (
+                <div
+                  style={{
+                    color: "#777",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "3px 10px",
+                  }}
+                >
+                  선택한 분야의 지표 데이터가 없습니다.
+                </div>
+              )}
+
+              {filteredIndicatorItems.map((ind, i) => (
                 <div
                   key={i}
                   style={{
@@ -625,6 +715,12 @@ export default function ESGDashboard({ country, onBack }) {
                 </div>
               )}
 
+              {scoreStatus === "loaded" && Object.keys(filteredScores).length === 0 && (
+                <div style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
+                  선택한 분야의 ESG 점수 데이터가 없습니다.
+                </div>
+              )}
+
               {Object.entries(filteredScores).map(([key, val]) => (
                 <div key={key}>
                   <div
@@ -636,7 +732,7 @@ export default function ESGDashboard({ country, onBack }) {
                     }}
                   >
                     <span style={{ fontWeight: 700, color: esgColors[key] }}>
-                      {key}
+                      {key} {esgLabels[key]}
                     </span>
                     <span style={{ fontWeight: 600, color: "#333" }}>
                       {formatScoreValue(val)}
@@ -661,6 +757,25 @@ export default function ESGDashboard({ country, onBack }) {
                       }}
                     />
                   </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      color: "#777",
+                      fontSize: 11,
+                      marginTop: 4,
+                    }}
+                  >
+                    <span>전년도 점수 {formatScoreValue(previousScoreItems[key])}</span>
+                    <span
+                      style={{
+                        color: scoreChangeColor(scoreChanges[key]),
+                        fontWeight: 700,
+                      }}
+                    >
+                      전년도 대비 {formatScoreChange(scoreChanges[key])}
+                    </span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -675,16 +790,15 @@ export default function ESGDashboard({ country, onBack }) {
           }}
         >
           <StatCard
-            label="ESG 종합 점수"
-            value={formatScoreValue(scoreSummary.overall)}
-            valueColor="#1A237E"
+            label={`${selectedScoreLabel} 점수`}
+            value={formatScoreValue(selectedScore)}
+            valueColor={selectedScoreColor}
+            helper={`전년도 점수 ${formatScoreValue(selectedPreviousScore)}`}
           />
           <StatCard
-            label="전월 대비 변화"
-            value={formatScoreChange(scoreSummary.overallChange)}
-            valueColor={
-              Number(scoreSummary.overallChange) < 0 ? "#C62828" : "#2E7D32"
-            }
+            label="전년도 대비 변화"
+            value={formatScoreChange(selectedScoreChange)}
+            valueColor={scoreChangeColor(selectedScoreChange)}
           />
 
           <Card
@@ -719,9 +833,21 @@ export default function ESGDashboard({ country, onBack }) {
                 </div>
               )}
 
-              {riskSignalStatus === "no-risk" && (
+              {riskSignalStatus === "no-risk" && activeTab === "ALL" && (
                 <div style={{ color: "#2E7D32", fontSize: 11, fontWeight: 600 }}>
                   현재 주요 위험 신호가 없습니다.
+                </div>
+              )}
+
+              {riskSignalStatus === "loaded" && filteredRiskSignalItems.length === 0 && (
+                <div style={{ color: "#2E7D32", fontSize: 11, fontWeight: 600 }}>
+                  선택한 분야의 주요 위험 신호가 없습니다.
+                </div>
+              )}
+
+              {riskSignalStatus === "no-risk" && activeTab !== "ALL" && (
+                <div style={{ color: "#2E7D32", fontSize: 11, fontWeight: 600 }}>
+                  선택한 분야의 주요 위험 신호가 없습니다.
                 </div>
               )}
 
@@ -731,7 +857,7 @@ export default function ESGDashboard({ country, onBack }) {
                 </div>
               )}
 
-              {riskSignalItems.map((sig, i) => (
+              {filteredRiskSignalItems.map((sig, i) => (
                 <div
                   key={i}
                   style={{
@@ -751,6 +877,32 @@ export default function ESGDashboard({ country, onBack }) {
             </div>
           </Card>
         </div>
+
+        {activeTab === "ALL" && (
+          <Card title="ESG 종합점수 추이" style={{ padding: "12px 10px" }}>
+            {scoreTrendStatus === "loading" && (
+              <div style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
+                종합점수 추이를 불러오는 중입니다...
+              </div>
+            )}
+
+            {scoreTrendStatus === "empty" && (
+              <div style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
+                종합점수 추이 데이터가 없습니다.
+              </div>
+            )}
+
+            {scoreTrendStatus === "error" && (
+              <div style={{ color: "#C62828", fontSize: 11, fontWeight: 600 }}>
+                종합점수 추이를 불러오지 못했습니다.
+              </div>
+            )}
+
+            {scoreTrendStatus === "loaded" && (
+              <ScoreTrendChart items={scoreTrendItems} />
+            )}
+          </Card>
+        )}
       </div>
     </div>
   );
@@ -787,7 +939,7 @@ function Card({ title, children, style = {} }) {
   );
 }
 
-function StatCard({ label, value, valueColor }) {
+function StatCard({ label, value, valueColor, helper }) {
   return (
     <Card style={{ padding: "10px 10px", textAlign: "center" }}>
       <p
@@ -811,6 +963,135 @@ function StatCard({ label, value, valueColor }) {
       >
         {value}
       </p>
+
+      {helper && (
+        <p
+          style={{
+            fontSize: 10,
+            color: "#888",
+            margin: "5px 0 0",
+            fontWeight: 600,
+          }}
+        >
+          {helper}
+        </p>
+      )}
     </Card>
+  );
+}
+
+function ScoreTrendChart({ items }) {
+  const width = 640;
+  const height = 190;
+  const padding = { top: 18, right: 16, bottom: 34, left: 36 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const values = items.map((item) => Number(item.overall)).filter(Number.isFinite);
+
+  if (items.length === 0 || values.length === 0) {
+    return (
+      <div style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
+        종합점수 추이 데이터가 없습니다.
+      </div>
+    );
+  }
+
+  const points = items.map((item, index) => {
+    const value = Number(item.overall);
+    const x =
+      padding.left +
+      (items.length === 1 ? plotWidth / 2 : (plotWidth * index) / (items.length - 1));
+    const y = padding.top + plotHeight - (Math.max(0, Math.min(100, value)) / 100) * plotHeight;
+    return { ...item, value, x, y };
+  });
+  const linePoints = points.map((point) => `${point.x},${point.y}`).join(" ");
+  const latest = points[points.length - 1];
+
+  return (
+    <div style={{ width: "100%", overflow: "hidden" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          marginBottom: 8,
+          gap: 10,
+        }}
+      >
+        <span style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
+          최근 {items.length}개 연도 기준
+        </span>
+        <span style={{ color: "#1A237E", fontSize: 14, fontWeight: 800 }}>
+          최신 {latest.year}년 {formatScoreValue(latest.value)}
+        </span>
+      </div>
+
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="ESG 종합점수 추이 그래프"
+        style={{ display: "block", width: "100%", height: "auto" }}
+      >
+        {[0, 25, 50, 75, 100].map((tick) => {
+          const y = padding.top + plotHeight - (tick / 100) * plotHeight;
+          return (
+            <g key={tick}>
+              <line
+                x1={padding.left}
+                x2={width - padding.right}
+                y1={y}
+                y2={y}
+                stroke="#E8EAF0"
+                strokeWidth="1"
+              />
+              <text
+                x={padding.left - 8}
+                y={y + 4}
+                textAnchor="end"
+                fill="#888"
+                fontSize="10"
+              >
+                {tick}
+              </text>
+            </g>
+          );
+        })}
+
+        <polyline
+          points={linePoints}
+          fill="none"
+          stroke="#1A237E"
+          strokeWidth="3"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+
+        {points.map((point) => (
+          <g key={point.year}>
+            <circle cx={point.x} cy={point.y} r="4.5" fill="#1A237E" />
+            <text
+              x={point.x}
+              y={height - 12}
+              textAnchor="middle"
+              fill="#666"
+              fontSize="11"
+              fontWeight="700"
+            >
+              {point.year}
+            </text>
+            <text
+              x={point.x}
+              y={Math.max(12, point.y - 9)}
+              textAnchor="middle"
+              fill="#333"
+              fontSize="10"
+              fontWeight="700"
+            >
+              {point.value.toFixed(1)}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
   );
 }
