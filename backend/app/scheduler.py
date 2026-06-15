@@ -155,15 +155,31 @@ def ensure_recent_country_news(country_code, db, stale_days=30):
     if country_code not in RECENT_NEWS_FALLBACKS:
         return 0
 
+    if not is_recent_country_news_stale(country_code, db, stale_days):
+        return 0
+
+    return sync_recent_country_news(country_code, db)
+
+def is_recent_country_news_stale(country_code, db, stale_days=30):
+    if country_code not in RECENT_NEWS_FALLBACKS:
+        return False
+
     latest = (
         db.query(func.max(News.published_at))
         .filter(News.country == country_code)
         .scalar()
     )
     if latest and latest >= date.today() - timedelta(days=stale_days):
-        return 0
+        return False
 
-    return sync_recent_country_news(country_code, db)
+    return True
+
+def refresh_recent_country_news(country_code):
+    db = SessionLocal()
+    try:
+        return sync_recent_country_news(country_code, db)
+    finally:
+        db.close()
 
 def _infer_country_code(item=None, category=None, text=None):
     if category == "USA":

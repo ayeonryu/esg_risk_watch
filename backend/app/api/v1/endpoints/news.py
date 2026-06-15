@@ -1,7 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from app.db.session import get_db
 from app.models.news import News
 from app.models.esg_stat import ESGStat
@@ -13,11 +13,6 @@ router = APIRouter()
 def _get_news_url(row: News):
     if row.url:
         return row.url
-
-    content = (row.content or "").strip()
-    if content.startswith(("http://", "https://")):
-        return content
-
     return None
 
 
@@ -27,8 +22,8 @@ def _serialize_news(row: News):
         "external_id": row.external_id,
         "category": row.category,
         "title": row.title,
-        "content": row.content,
-        "keywords": row.keywords,
+        "content": None,
+        "keywords": None,
         "media": row.media,
         "country": row.country,
         "region": row.region,
@@ -53,9 +48,6 @@ def list_news(
             detail="start_date must be on or before end_date",
         )
 
-    if country in {"KOR", "DEU"}:
-        scheduler.ensure_recent_country_news(country, db)
-
     query = db.query(News)
     if country:
         query = query.filter(News.country == country)
@@ -63,12 +55,25 @@ def list_news(
         query = query.filter(News.published_at >= start_date)
     if end_date:
         query = query.filter(News.published_at <= end_date)
-    if country in {"KOR", "DEU"}:
-        query = query.filter(News.external_id.notlike("GDELT:%"))
-
+    fetch_limit = limit
     rows = (
-        query.order_by(News.published_at.desc(), News.created_at.desc(), News.id.desc())
-        .limit(min(limit * 20, 500))
+        query.options(
+            load_only(
+                News.id,
+                News.external_id,
+                News.category,
+                News.title,
+                News.media,
+                News.country,
+                News.region,
+                News.published_at,
+                News.created_at,
+                News.esg_score,
+                News.url,
+            )
+        )
+        .order_by(News.published_at.desc(), News.id.desc())
+        .limit(fetch_limit)
         .all()
     )
 

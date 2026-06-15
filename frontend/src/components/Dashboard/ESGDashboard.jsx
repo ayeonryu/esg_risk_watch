@@ -105,6 +105,8 @@ export default function ESGDashboard({ country, onBack }) {
     overall: null,
     previousOverall: null,
     overallChange: null,
+    year: null,
+    previousYear: null,
   });
   const [scoreStatus, setScoreStatus] = useState("idle");
   const [scoreTrendItems, setScoreTrendItems] = useState([]);
@@ -301,6 +303,8 @@ export default function ESGDashboard({ country, onBack }) {
           overall: data.overall,
           previousOverall: data.previous_overall,
           overallChange: data.overall_change,
+          year: data.year,
+          previousYear: data.previous_year,
         });
         setScoreStatus(Object.keys(scores).length > 0 ? "loaded" : "empty");
       } catch (error) {
@@ -309,7 +313,13 @@ export default function ESGDashboard({ country, onBack }) {
           setScoreItems({});
           setPreviousScoreItems({});
           setScoreChanges({});
-          setScoreSummary({ overall: null, previousOverall: null, overallChange: null });
+          setScoreSummary({
+            overall: null,
+            previousOverall: null,
+            overallChange: null,
+            year: null,
+            previousYear: null,
+          });
           setScoreStatus("error");
         }
       }
@@ -360,12 +370,11 @@ export default function ESGDashboard({ country, onBack }) {
     setIsCalendarOpen(false);
   };
 
-  const filteredScores =
-    activeTab === "ALL"
-      ? scoreItems
-      : scoreItems[activeTab] !== undefined
-        ? { [activeTab]: scoreItems[activeTab] }
-        : {};
+  const scoreCategories = activeTab === "ALL" ? TABS.filter((tab) => tab !== "ALL") : [activeTab];
+  const filteredScores = scoreCategories.map((key) => ({
+    key,
+    value: scoreItems[key],
+  }));
   const filteredIndicatorItems =
     activeTab === "ALL"
       ? indicatorItems
@@ -384,6 +393,13 @@ export default function ESGDashboard({ country, onBack }) {
     activeTab === "ALL" ? scoreSummary.overallChange : scoreChanges[activeTab];
   const selectedScoreColor =
     activeTab === "ALL" ? "#1A237E" : esgColors[activeTab] || "#1A237E";
+  const scoreYearLabel = scoreSummary.year ? `${scoreSummary.year}년` : "";
+  const previousScoreYearLabel = scoreSummary.previousYear
+    ? `${scoreSummary.previousYear}년`
+    : "전년도";
+  const scoreCardLabel = scoreYearLabel
+    ? `${selectedScoreLabel} 점수 (${scoreYearLabel})`
+    : `${selectedScoreLabel} 점수`;
 
   return (
     <div
@@ -823,13 +839,13 @@ export default function ESGDashboard({ country, onBack }) {
                 </div>
               )}
 
-              {scoreStatus === "loaded" && Object.keys(filteredScores).length === 0 && (
+              {scoreStatus === "loaded" && filteredScores.length === 0 && (
                 <div style={{ color: "#777", fontSize: 11, fontWeight: 600 }}>
                   선택한 분야의 ESG 점수 데이터가 없습니다.
                 </div>
               )}
 
-              {Object.entries(filteredScores).map(([key, val]) => (
+              {filteredScores.map(({ key, value: val }) => (
                 <div key={key}>
                   <div
                     style={{
@@ -874,14 +890,16 @@ export default function ESGDashboard({ country, onBack }) {
                       marginTop: 4,
                     }}
                   >
-                    <span>전년도 점수 {formatScoreValue(previousScoreItems[key])}</span>
+                    <span>
+                      {previousScoreYearLabel} 점수 {formatScoreValue(previousScoreItems[key])}
+                    </span>
                     <span
                       style={{
                         color: scoreChangeColor(scoreChanges[key]),
                         fontWeight: 700,
                       }}
                     >
-                      전년도 대비 {formatScoreChange(scoreChanges[key])}
+                      {previousScoreYearLabel} 대비 {formatScoreChange(scoreChanges[key])}
                     </span>
                   </div>
                 </div>
@@ -898,13 +916,13 @@ export default function ESGDashboard({ country, onBack }) {
           }}
         >
           <StatCard
-            label={`${selectedScoreLabel} 점수`}
+            label={scoreCardLabel}
             value={formatScoreValue(selectedScore)}
             valueColor={selectedScoreColor}
-            helper={`전년도 점수 ${formatScoreValue(selectedPreviousScore)}`}
+            helper={`${previousScoreYearLabel} 점수 ${formatScoreValue(selectedPreviousScore)}`}
           />
           <StatCard
-            label="전년도 대비 변화"
+            label={`${previousScoreYearLabel} 대비 변화`}
             value={formatScoreChange(selectedScoreChange)}
             valueColor={scoreChangeColor(selectedScoreChange)}
           />
@@ -1133,7 +1151,6 @@ function ScoreTrendChart({ items }) {
           최신 {latest.year}년 {formatScoreValue(latest.value)}
         </span>
       </div>
-
       <svg
         viewBox={`0 0 ${width} ${height}`}
         role="img"

@@ -205,6 +205,27 @@ def _category_scores_for_year(rows_by_type: dict, year: int):
     }
 
 
+def _complete_score_years(
+    rows_by_type: dict,
+    start_year: int | None = None,
+    end_year: int | None = None,
+):
+    years = sorted(
+        {
+            year
+            for rows_by_year in rows_by_type.values()
+            for year in rows_by_year
+            if (start_year is None or year >= start_year)
+            and (end_year is None or year <= end_year)
+        }
+    )
+    return [
+        year
+        for year in years
+        if all(category in _category_scores_for_year(rows_by_type, year) for category in ("E", "S", "G"))
+    ]
+
+
 @router.get("/scores")
 def indicator_scores(
     country: str = Query(..., min_length=2),
@@ -213,39 +234,60 @@ def indicator_scores(
     db: Session = Depends(get_db),
 ):
     start_year, end_year = _date_range_years(start_date, end_date)
-    rows_by_type = _latest_rows_by_type(country, db, start_year, end_year)
+    has_date_filter = start_date is not None or end_date is not None
+    target_year = None
+    previous_year = None
 
-    category_scores = {"E": [], "S": [], "G": []}
-    previous_category_scores = {"E": [], "S": [], "G": []}
+    if has_date_filter:
+        rows_by_type = _rows_by_type_and_year(country, db)
+        available_years = _complete_score_years(rows_by_type, end_year=end_year)
 
-    for risk_type, meta in INDICATOR_META.items():
-        stats = rows_by_type.get(risk_type, [])
-        if not stats:
-            continue
+        target_year = available_years[-1] if available_years else None
+        previous_year = target_year - 1 if target_year is not None else None
 
-        latest = stats[0]
-        previous = stats[1] if len(stats) > 1 else None
-        score, previous_score = _indicator_score(
-            risk_type,
-            latest,
-            previous,
-            meta["higher_is_risk"],
+        scores = (
+            _category_scores_for_year(rows_by_type, target_year)
+            if target_year is not None
+            else {}
         )
-        category = meta["category"]
-        category_scores[category].append(score)
-        if previous_score is not None:
-            previous_category_scores[category].append(previous_score)
+        previous_scores = (
+            _category_scores_for_year(rows_by_type, previous_year)
+            if previous_year is not None
+            else {}
+        )
+    else:
+        rows_by_type = _latest_rows_by_type(country, db)
+        category_scores = {"E": [], "S": [], "G": []}
+        previous_category_scores = {"E": [], "S": [], "G": []}
 
-    scores = {
-        category: _clamp_score(sum(values) / len(values))
-        for category, values in category_scores.items()
-        if values
-    }
-    previous_scores = {
-        category: _clamp_score(sum(values) / len(values))
-        for category, values in previous_category_scores.items()
-        if values
-    }
+        for risk_type, meta in INDICATOR_META.items():
+            stats = rows_by_type.get(risk_type, [])
+            if not stats:
+                continue
+
+            latest = stats[0]
+            previous = stats[1] if len(stats) > 1 else None
+            score, previous_score = _indicator_score(
+                risk_type,
+                latest,
+                previous,
+                meta["higher_is_risk"],
+            )
+            category = meta["category"]
+            category_scores[category].append(score)
+            if previous_score is not None:
+                previous_category_scores[category].append(previous_score)
+
+        scores = {
+            category: _clamp_score(sum(values) / len(values))
+            for category, values in category_scores.items()
+            if values
+        }
+        previous_scores = {
+            category: _clamp_score(sum(values) / len(values))
+            for category, values in previous_category_scores.items()
+            if values
+        }
     score_changes = {
         category: round(scores[category] - previous_scores[category], 1)
         for category in scores
@@ -270,6 +312,8 @@ def indicator_scores(
 
     return {
         "country": country,
+        "year": target_year,
+        "previous_year": previous_year,
         "total": len(scores),
         "scores": scores,
         "previous_scores": previous_scores,
@@ -288,16 +332,11 @@ def score_trend(
     end_date: date | None = None,
     db: Session = Depends(get_db),
 ):
-    start_year, end_year = _date_range_years(start_date, end_date)
-    rows_by_type = _rows_by_type_and_year(country, db, start_year, end_year)
-    years = sorted(
-        {
-            year
-            for rows_by_year in rows_by_type.values()
-            for year in rows_by_year
-        }
-    )
+    _, end_year = _date_range_years(start_date, end_date)
+    rows_by_type = _rows_by_type_and_year(country, db)
+    years = _complete_score_years(rows_by_type, end_year=end_year)
 
+    target_year = years[-1] if years else None
     items = []
     for year in years:
         scores = _category_scores_for_year(rows_by_type, year)
@@ -314,6 +353,7 @@ def score_trend(
     limited_items = items[-limit:]
     return {
         "country": country,
+        "year": target_year,
         "total": len(limited_items),
         "items": limited_items,
     }

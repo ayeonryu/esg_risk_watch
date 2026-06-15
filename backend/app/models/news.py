@@ -1,9 +1,12 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Date
+from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Index
 from sqlalchemy.sql import func
 from app.db.session import Base
 
 class News(Base):
     __tablename__ = "news"
+    __table_args__ = (
+        Index("idx_news_country_published_id", "country", "published_at", "id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     external_id = Column(String(255), unique=True, index=True) 
