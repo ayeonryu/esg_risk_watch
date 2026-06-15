@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import "./EarthSelector.css";
 
 const countries = [
-  { name: "대한민국", lat: 37.5665, lng: 126.978 },
-  { name: "미국", lat: 38.9072, lng: -77.0369 },
-  { name: "중국", lat: 39.9042, lng: 116.4074 },
-  { name: "독일", lat: 52.52, lng: 13.405 },
+  { name: "대한민국", code: "KOR", lat: 37.5665, lng: 126.978 },
+  { name: "미국", code: "USA", lat: 38.9072, lng: -77.0369 },
+  { name: "중국", code: "CHN", lat: 39.9042, lng: 116.4074 },
+  { name: "독일", code: "DEU", lat: 52.52, lng: 13.405 },
 ];
 
 function latLngToVector3(lat, lng, radius = 2.15) {
@@ -127,7 +127,8 @@ function Globe({ onSelectCountry, active }) {
   useEffect(() => {
     if (!active) {
       cancelClearHover();
-      setHoveredCountry(null);
+      const timer = setTimeout(() => setHoveredCountry(null), 0);
+      return () => clearTimeout(timer);
     }
   }, [active]);
 
