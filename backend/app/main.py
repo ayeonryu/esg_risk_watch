@@ -13,8 +13,9 @@ Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    sc = scheduler.start_scheduler()
-    if os.environ.get("FULL_SYNC") == "true":
+    full_sync_requested = os.environ.get("FULL_SYNC") == "true"
+    sc = scheduler.start_scheduler(sync_indicators_on_start=not full_sync_requested)
+    if full_sync_requested:
         asyncio.create_task(asyncio.to_thread(scheduler.run_all_syncs))
     yield
     sc.shutdown()

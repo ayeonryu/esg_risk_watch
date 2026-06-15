@@ -2,7 +2,9 @@ import os
 
 if __name__ == '__main__':
     if os.environ.get("FULL_SYNC") is None:
-        choice = input("전체 동기화 실행? (y/n): ").strip().lower()
+        choice = input(
+            "뉴스 포함 전체 동기화 실행? (y/n) :"
+        ).strip().lower()
         os.environ["FULL_SYNC"] = "true" if choice == "y" else "false"
 
     import uvicorn

@@ -10,17 +10,25 @@ const COUNTRY_CODE_BY_NAME = {
   독일: "DEU",
 };
 
-const fallbackNewsItems = [
-  "삼성전자, 탄소중립 2050 로드맵 발표 — 재생에너지 전환 가속화",
-  "SK하이닉스 ESG 위원회 신설, 이사회 내 지속가능경영 강화",
-  "현대차그룹, 협력사 ESG 평가 시스템 도입 — 공급망 관리 강화",
-];
-
 const esgColors = { E: "#4CAF50", S: "#2196F3", G: "#9C27B0" };
 const esgLabels = { E: "환경", S: "사회", G: "지배구조" };
 const TABS = ["ALL", "E", "S", "G"];
 
-const getToday = () => new Date().toISOString().slice(0, 10);
+function addDateRangeParams(params, startDate, endDate) {
+  if (startDate) {
+    params.set("start_date", startDate);
+  }
+  if (endDate) {
+    params.set("end_date", endDate);
+  }
+}
+
+function hasNumericValue(value) {
+  if (value === null || value === undefined || value === "") {
+    return false;
+  }
+  return Number.isFinite(Number(value));
+}
 
 function formatIndicatorValue(item) {
   if (item.change_pct !== null && item.change_pct !== undefined) {
@@ -50,25 +58,27 @@ function indicatorColor(riskLevel) {
 }
 
 function formatScoreValue(value) {
+  if (!hasNumericValue(value)) {
+    return "데이터 없음";
+  }
   const number = Number(value);
-  return Number.isFinite(number) ? `${number.toFixed(1)}%` : "데이터 없음";
+  return `${number.toFixed(1)}%`;
 }
 
 function formatScoreChange(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) {
+  if (!hasNumericValue(value)) {
     return "데이터 없음";
   }
-
+  const number = Number(value);
   const sign = number > 0 ? "+" : "";
   return `${sign}${number.toFixed(1)}%`;
 }
 
 function scoreChangeColor(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) {
+  if (!hasNumericValue(value)) {
     return "#777";
   }
+  const number = Number(value);
   return number < 0 ? "#C62828" : "#2E7D32";
 }
 
@@ -77,9 +87,12 @@ export default function ESGDashboard({ country, onBack }) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
 
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
-  const [startDate, setStartDate] = useState(getToday);
-  const [endDate, setEndDate] = useState(getToday);
-  const [newsItems, setNewsItems] = useState(fallbackNewsItems);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [appliedStartDate, setAppliedStartDate] = useState("");
+  const [appliedEndDate, setAppliedEndDate] = useState("");
+  const [dateError, setDateError] = useState("");
+  const [newsItems, setNewsItems] = useState([]);
   const [newsStatus, setNewsStatus] = useState("idle");
   const [indicatorItems, setIndicatorItems] = useState([]);
   const [indicatorStatus, setIndicatorStatus] = useState("idle");
@@ -118,6 +131,7 @@ export default function ESGDashboard({ country, onBack }) {
         if (countryCode) {
           params.set("country", countryCode);
         }
+        addDateRangeParams(params, appliedStartDate, appliedEndDate);
 
         const response = await fetch(`${API_BASE_URL}/news/?${params}`, {
           signal: controller.signal,
@@ -129,19 +143,18 @@ export default function ESGDashboard({ country, onBack }) {
 
         const data = await response.json();
         setNewsItems(
-          data.length > 0
-            ? data.map((item) => ({
-                title: item.title,
-                media: item.media,
-                publishedAt: item.published_at,
-              }))
-            : fallbackNewsItems.map((title) => ({ title })),
+          data.map((item) => ({
+            title: item.title,
+            media: item.media,
+            publishedAt: item.published_at,
+            url: item.url,
+          })),
         );
         setNewsStatus(data.length > 0 ? "loaded" : "empty");
       } catch (error) {
         if (error.name !== "AbortError") {
           console.warn(error);
-          setNewsItems(fallbackNewsItems.map((title) => ({ title })));
+          setNewsItems([]);
           setNewsStatus("error");
         }
       }
@@ -150,7 +163,7 @@ export default function ESGDashboard({ country, onBack }) {
     loadNews();
 
     return () => controller.abort();
-  }, [countryCode]);
+  }, [countryCode, appliedStartDate, appliedEndDate]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -163,6 +176,7 @@ export default function ESGDashboard({ country, onBack }) {
         if (countryCode) {
           params.set("country", countryCode);
         }
+        addDateRangeParams(params, appliedStartDate, appliedEndDate);
 
         const response = await fetch(`${API_BASE_URL}/indicators/score-trend?${params}`, {
           signal: controller.signal,
@@ -188,7 +202,7 @@ export default function ESGDashboard({ country, onBack }) {
     loadScoreTrend();
 
     return () => controller.abort();
-  }, [countryCode]);
+  }, [countryCode, appliedStartDate, appliedEndDate]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -202,6 +216,7 @@ export default function ESGDashboard({ country, onBack }) {
         if (countryCode) {
           params.set("country", countryCode);
         }
+        addDateRangeParams(params, appliedStartDate, appliedEndDate);
 
         const response = await fetch(`${API_BASE_URL}/indicators/summary?${params}`, {
           signal: controller.signal,
@@ -254,7 +269,7 @@ export default function ESGDashboard({ country, onBack }) {
     loadIndicators();
 
     return () => controller.abort();
-  }, [countryCode]);
+  }, [countryCode, appliedStartDate, appliedEndDate]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -267,6 +282,7 @@ export default function ESGDashboard({ country, onBack }) {
         if (countryCode) {
           params.set("country", countryCode);
         }
+        addDateRangeParams(params, appliedStartDate, appliedEndDate);
 
         const response = await fetch(`${API_BASE_URL}/indicators/scores?${params}`, {
           signal: controller.signal,
@@ -302,15 +318,46 @@ export default function ESGDashboard({ country, onBack }) {
     loadScores();
 
     return () => controller.abort();
-  }, [countryCode]);
+  }, [countryCode, appliedStartDate, appliedEndDate]);
 
   const handleStartDateChange = (e) => {
     const newStartDate = e.target.value;
     setStartDate(newStartDate);
+    setDateError("");
 
-    if (endDate < newStartDate) {
+    if (endDate && endDate < newStartDate) {
       setEndDate(newStartDate);
     }
+  };
+
+  const handleEndDateChange = (e) => {
+    setEndDate(e.target.value);
+    setDateError("");
+  };
+
+  const handleApplyDateRange = () => {
+    if (!startDate || !endDate) {
+      setDateError("시작일과 종료일을 모두 선택해주세요.");
+      return;
+    }
+    if (startDate > endDate) {
+      setDateError("시작일은 종료일보다 늦을 수 없습니다.");
+      return;
+    }
+
+    setAppliedStartDate(startDate);
+    setAppliedEndDate(endDate);
+    setDateError("");
+    setIsCalendarOpen(false);
+  };
+
+  const handleClearDateRange = () => {
+    setStartDate("");
+    setEndDate("");
+    setAppliedStartDate("");
+    setAppliedEndDate("");
+    setDateError("");
+    setIsCalendarOpen(false);
   };
 
   const filteredScores =
@@ -514,7 +561,7 @@ export default function ESGDashboard({ country, onBack }) {
                     type="date"
                     value={endDate}
                     min={startDate}
-                    onChange={(e) => setEndDate(e.target.value)}
+                    onChange={handleEndDateChange}
                     style={{
                       width: "100%",
                       boxSizing: "border-box",
@@ -535,11 +582,27 @@ export default function ESGDashboard({ country, onBack }) {
                   lineHeight: 1.5,
                 }}
               >
-                선택 기간: {startDate} ~ {endDate}
+                적용 기간:{" "}
+                {appliedStartDate && appliedEndDate
+                  ? `${appliedStartDate} ~ ${appliedEndDate}`
+                  : "전체 기간"}
               </p>
 
+              {dateError && (
+                <p
+                  style={{
+                    margin: "8px 0 0",
+                    color: "#C62828",
+                    fontSize: 11,
+                    fontWeight: 600,
+                  }}
+                >
+                  {dateError}
+                </p>
+              )}
+
               <button
-                onClick={() => setIsCalendarOpen(false)}
+                onClick={handleApplyDateRange}
                 style={{
                   width: "100%",
                   marginTop: 12,
@@ -554,6 +617,24 @@ export default function ESGDashboard({ country, onBack }) {
                 }}
               >
                 적용
+              </button>
+
+              <button
+                onClick={handleClearDateRange}
+                style={{
+                  width: "100%",
+                  marginTop: 7,
+                  padding: "8px 0",
+                  border: "1px solid #D0D4E0",
+                  borderRadius: 7,
+                  background: "#fff",
+                  color: "#555",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                전체 기간
               </button>
             </div>
           )}
@@ -593,6 +674,18 @@ export default function ESGDashboard({ country, onBack }) {
               </li>
             )}
 
+            {newsStatus === "empty" && (
+              <li style={{ fontSize: 13, color: "#777", lineHeight: 1.6 }}>
+                실제 뉴스 데이터가 없습니다.
+              </li>
+            )}
+
+            {newsStatus === "error" && (
+              <li style={{ fontSize: 13, color: "#C62828", lineHeight: 1.6 }}>
+                실제 뉴스 데이터를 불러오지 못했습니다.
+              </li>
+            )}
+
             {newsItems.map((item, i) => (
               <li
                 key={i}
@@ -602,7 +695,22 @@ export default function ESGDashboard({ country, onBack }) {
                   lineHeight: 1.6,
                 }}
               >
-                {typeof item === "string" ? item : item.title}
+                {typeof item === "string" || !item.url ? (
+                  typeof item === "string" ? item : item.title
+                ) : (
+                  <a
+                    href={item.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      color: "inherit",
+                      textDecoration: "underline",
+                      textUnderlineOffset: 2,
+                    }}
+                  >
+                    {item.title}
+                  </a>
+                )}
                 {typeof item !== "string" && (item.media || item.publishedAt) && (
                   <span style={{ color: "#888", fontSize: 11 }}>
                     {" "}

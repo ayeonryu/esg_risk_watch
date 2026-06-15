@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -9,8 +11,18 @@ router = APIRouter()
 
 @router.post("/sync/freedom")
 def sync_freedom_indicator():
-    scheduler.sync_freedom_score()
-    return {"status": "success"}
+    synced_rows = scheduler.sync_freedom_score()
+    return {"status": "success", "synced_rows": synced_rows}
+
+
+@router.post("/sync/all")
+def sync_all_indicators():
+    return scheduler.run_indicator_syncs()
+
+
+@router.get("/sync/status")
+def indicator_sync_status():
+    return scheduler.get_indicator_sync_status()
 
 INDICATOR_META = {
     "energy_consumption_risk": {
@@ -73,13 +85,49 @@ def _indicator_score(risk_type: str, latest, previous, higher_is_risk: bool) -> 
     return score, previous_score
 
 
-def _latest_rows_by_type(country: str, db: Session):
-    rows = (
+def _date_range_years(
+    start_date: date | None,
+    end_date: date | None,
+) -> tuple[int | None, int | None]:
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="start_date must be on or before end_date",
+        )
+    return (
+        start_date.year if start_date else None,
+        end_date.year if end_date else None,
+    )
+
+
+def _indicator_query(
+    country: str,
+    db: Session,
+    start_year: int | None = None,
+    end_year: int | None = None,
+):
+    query = (
         db.query(ESGStat)
         .filter(ESGStat.country_code == country)
         .filter(ESGStat.risk_type.in_(INDICATOR_META.keys()))
         .filter(ESGStat.value.isnot(None))
-        .order_by(ESGStat.risk_type.asc(), ESGStat.year.desc())
+    )
+    if start_year is not None:
+        query = query.filter(ESGStat.year >= start_year)
+    if end_year is not None:
+        query = query.filter(ESGStat.year <= end_year)
+    return query
+
+
+def _latest_rows_by_type(
+    country: str,
+    db: Session,
+    start_year: int | None = None,
+    end_year: int | None = None,
+):
+    rows = (
+        _indicator_query(country, db, start_year, end_year)
+        .order_by(ESGStat.risk_type.asc(), ESGStat.year.desc(), ESGStat.id.desc())
         .all()
     )
 
@@ -98,12 +146,14 @@ def _latest_rows_by_type(country: str, db: Session):
     return rows_by_type
 
 
-def _rows_by_type_and_year(country: str, db: Session):
+def _rows_by_type_and_year(
+    country: str,
+    db: Session,
+    start_year: int | None = None,
+    end_year: int | None = None,
+):
     rows = (
-        db.query(ESGStat)
-        .filter(ESGStat.country_code == country)
-        .filter(ESGStat.risk_type.in_(INDICATOR_META.keys()))
-        .filter(ESGStat.value.isnot(None))
+        _indicator_query(country, db, start_year, end_year)
         .order_by(ESGStat.risk_type.asc(), ESGStat.year.desc(), ESGStat.id.desc())
         .all()
     )
@@ -158,9 +208,12 @@ def _category_scores_for_year(rows_by_type: dict, year: int):
 @router.get("/scores")
 def indicator_scores(
     country: str = Query(..., min_length=2),
+    start_date: date | None = None,
+    end_date: date | None = None,
     db: Session = Depends(get_db),
 ):
-    rows_by_type = _latest_rows_by_type(country, db)
+    start_year, end_year = _date_range_years(start_date, end_date)
+    rows_by_type = _latest_rows_by_type(country, db, start_year, end_year)
 
     category_scores = {"E": [], "S": [], "G": []}
     previous_category_scores = {"E": [], "S": [], "G": []}
@@ -231,9 +284,12 @@ def indicator_scores(
 def score_trend(
     country: str = Query(..., min_length=2),
     limit: int = Query(6, ge=2, le=20),
+    start_date: date | None = None,
+    end_date: date | None = None,
     db: Session = Depends(get_db),
 ):
-    rows_by_type = _rows_by_type_and_year(country, db)
+    start_year, end_year = _date_range_years(start_date, end_date)
+    rows_by_type = _rows_by_type_and_year(country, db, start_year, end_year)
     years = sorted(
         {
             year
@@ -267,9 +323,12 @@ def score_trend(
 def indicator_summary(
     country: str = Query(..., min_length=2),
     limit: int = Query(4, ge=1, le=10),
+    start_date: date | None = None,
+    end_date: date | None = None,
     db: Session = Depends(get_db),
 ):
-    rows_by_type = _latest_rows_by_type(country, db)
+    start_year, end_year = _date_range_years(start_date, end_date)
+    rows_by_type = _latest_rows_by_type(country, db, start_year, end_year)
 
     items = []
     for risk_type, meta in INDICATOR_META.items():

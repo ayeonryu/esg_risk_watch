@@ -16,12 +16,24 @@ from app.models.news import News
 from app.models.esg_stat import ESGStat
 from app.core.config import SERVICE_KEY
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy import func
 
 current_year = datetime.now().year
 TARGET_COUNTRIES = {"KOR", "USA", "CHN", "DEU"}
+WORLD_BANK_INDICATORS = (
+    ("EG.USE.PCAP.KG.OE", "E", "energy_consumption_risk"),
+    ("SL.UEM.TOTL.ZS", "S", "unemployment_risk"),
+    ("SP.DYN.LE00.IN", "S", "life_expectancy_risk"),
+)
+REQUIRED_INDICATOR_TYPES = {
+    "energy_consumption_risk",
+    "unemployment_risk",
+    "life_expectancy_risk",
+    "freedom_governance_risk",
+}
 COUNTRY_KEYWORDS = {
     "KOR": ("대한민국", "한국", "서울", "부산", "Korea"),
     "USA": ("미국", "워싱턴", "뉴욕", "실리콘밸리", "달라스", "로스앤젤레스", "시카고", "United States", "USA"),
@@ -313,6 +325,7 @@ def sync_bigdata_esg():
 
 def sync_worldbank(indicator_code, category, risk_type):
     db = SessionLocal()
+    synced_rows = 0
     try:
         url = f"https://api.worldbank.org/v2/en/indicator/{indicator_code}?downloadformat=csv"
         res = requests.get(url, timeout=60)
@@ -353,6 +366,7 @@ def sync_worldbank(indicator_code, category, risk_type):
                     existing.country = row.get("Country Name")
                     existing.indicator = row.get("Indicator Name")
                     existing.value = value
+                    synced_rows += 1
                     continue
                 db.add(ESGStat(
                     category=category,
@@ -364,10 +378,12 @@ def sync_worldbank(indicator_code, category, risk_type):
                     year=year,
                     value=value,
                 ))
+                synced_rows += 1
         db.commit()
+        return synced_rows
     except Exception as e:
         db.rollback()
-        print(f"[오류] 월드뱅크 지표({indicator_code}) 수집 무시: {e}", flush=True)
+        raise RuntimeError(f"월드뱅크 지표({indicator_code}) 수집 실패: {e}") from e
     finally:
         db.close()
 
@@ -398,6 +414,7 @@ def backfill_news_countries():
 
 def sync_freedom_score():
     db = SessionLocal()
+    synced_rows = 0
     try:
         url = "https://ourworldindata.org/grapher/freedom-score-fh.csv?v=1&csvType=full&useColumnShortNames=false"
         res = requests.get(
@@ -429,51 +446,161 @@ def sync_freedom_score():
                     existing.country = entity
                     existing.indicator = "Freedom House score"
                     existing.value = value
+                    synced_rows += 1
                     continue
                 db.add(ESGStat(
                     category="G", risk_type="freedom_governance_risk", country=entity, country_code=country_code,
                     indicator="Freedom House score", indicator_code="freedom-score-fh", year=year,
                     value=value
                 ))
+                synced_rows += 1
         db.commit()
+        return synced_rows
+    except Exception as e:
+        db.rollback()
+        raise RuntimeError(f"자유지수 수집 실패: {e}") from e
+    finally:
+        db.close()
+
+def get_indicator_sync_status():
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(
+                ESGStat.country_code,
+                ESGStat.risk_type,
+                func.count(ESGStat.id),
+            )
+            .filter(ESGStat.country_code.in_(TARGET_COUNTRIES))
+            .filter(ESGStat.risk_type.in_(REQUIRED_INDICATOR_TYPES))
+            .filter(ESGStat.value.isnot(None))
+            .group_by(ESGStat.country_code, ESGStat.risk_type)
+            .all()
+        )
+    finally:
+        db.close()
+
+    country_counts = {country_code: {} for country_code in sorted(TARGET_COUNTRIES)}
+    for country_code, risk_type, row_count in rows:
+        country_counts[country_code][risk_type] = row_count
+
+    countries = {}
+    for country_code, counts in country_counts.items():
+        missing = sorted(REQUIRED_INDICATOR_TYPES - set(counts))
+        countries[country_code] = {
+            "ready": not missing,
+            "row_count": sum(counts.values()),
+            "risk_types": counts,
+            "missing_risk_types": missing,
+        }
+
+    return {
+        "ready": all(item["ready"] for item in countries.values()),
+        "countries": countries,
+    }
+
+def _run_sync_step(name, sync_function):
+    try:
+        result = sync_function()
+        print(f"[완료] {name}: {result}", flush=True)
+        return {"status": "success", "result": result}
+    except Exception as e:
+        print(f"[오류] {name}: {e}", flush=True)
+        return {"status": "failed", "error": str(e)}
+
+def run_indicator_syncs():
+    print("핵심 ESG 지표 동기화 시작", flush=True)
+    steps = {}
+    for indicator_code, category, risk_type in WORLD_BANK_INDICATORS:
+        steps[risk_type] = _run_sync_step(
+            risk_type,
+            lambda code=indicator_code, group=category, kind=risk_type: sync_worldbank(
+                code,
+                group,
+                kind,
+            ),
+        )
+    steps["freedom_governance_risk"] = _run_sync_step(
+        "freedom_governance_risk",
+        sync_freedom_score,
+    )
+
+    status = get_indicator_sync_status()
+    all_steps_succeeded = all(
+        step["status"] == "success"
+        for step in steps.values()
+    )
+    if status["ready"] and all_steps_succeeded:
+        print("핵심 ESG 지표 동기화 완료: 모든 대상 국가 준비됨", flush=True)
+    else:
+        missing = {
+            country_code: item["missing_risk_types"]
+            for country_code, item in status["countries"].items()
+            if not item["ready"]
+        }
+        print(f"[경고] 핵심 ESG 지표 누락: {missing}", flush=True)
+
+    return {
+        "status": "success" if status["ready"] and all_steps_succeeded else "partial",
+        "steps": steps,
+        **status,
+    }
+
+def _sync_kotra_news(url, category):
+    db = SessionLocal()
+    return fetch_all_news(url, category, db)
+
+def _sync_recent_target_news():
+    db = SessionLocal()
+    try:
+        return sum(
+            sync_recent_country_news(country_code, db)
+            for country_code in ("KOR", "DEU")
+        )
     finally:
         db.close()
 
 def run_all_syncs():
-    db = SessionLocal()
-    print("전체 동기화 시작")
-    print("[1/8] ESG 뉴스 수집")
-    c1 = fetch_all_news("https://apis.data.go.kr/B410001/trend-news/getTrend-news", "ESG", db)
-    print(f"-> 완료: 신규 {c1}건")
-    print("[2/8] 중국 이슈 수집")
-    c2 = fetch_all_news("https://apis.data.go.kr/B410001/chinaGlobalIssueMonitoring/getChinaGlobalIssueMonitoring", "CHINA", db)
-    print(f"-> 완료: 신규 {c2}건")
-    print("[3/8] 미국 이슈 수집")
-    c3 = fetch_all_news("https://apis.data.go.kr/B410001/usaGlobalIssueMonitoring/getUsaGlobalIssueMonitoring", "USA", db)
-    print(f"-> 완료: 신규 {c3}건")
-    print("[4/8] 빅데이터 ESG 수집 (1~4)")
-    c4 = sync_bigdata_esg()
-    print(f"-> 완료: 신규 {c4}건")
-    print("[4-1/8] KOR/DEU recent news fallback")
-    c5 = 0
-    for country_code in ("KOR", "DEU"):
-        c5 += sync_recent_country_news(country_code, db)
-    print(f"-> recent fallback added: {c5}")
-    backfilled = backfill_news_countries()
-    print(f"-> 국가 코드 보정: {backfilled}건")
-    print("[5/8] 에너지 소비 지표 수집")
-    sync_worldbank("EG.USE.PCAP.KG.OE", "E", "energy_consumption_risk")
-    print("[6/8] 실업률 지표 수집")
-    sync_worldbank("SL.UEM.TOTL.ZS", "S", "unemployment_risk")
-    print("[7/8] 기대수명 지표 수집")
-    sync_worldbank("SP.DYN.LE00.IN", "S", "life_expectancy_risk")
-    print("[8/8] 자유지수 수집")
-    sync_freedom_score()
-    print("전체 동기화 완료")
-    db.close()
+    print("전체 동기화 시작", flush=True)
+    results = {
+        "indicators": run_indicator_syncs(),
+        "news_esg": _run_sync_step(
+            "ESG 뉴스",
+            lambda: _sync_kotra_news(
+                "https://apis.data.go.kr/B410001/trend-news/getTrend-news",
+                "ESG",
+            ),
+        ),
+        "news_china": _run_sync_step(
+            "중국 이슈",
+            lambda: _sync_kotra_news(
+                "https://apis.data.go.kr/B410001/chinaGlobalIssueMonitoring/getChinaGlobalIssueMonitoring",
+                "CHINA",
+            ),
+        ),
+        "news_usa": _run_sync_step(
+            "미국 이슈",
+            lambda: _sync_kotra_news(
+                "https://apis.data.go.kr/B410001/usaGlobalIssueMonitoring/getUsaGlobalIssueMonitoring",
+                "USA",
+            ),
+        ),
+        "news_bigdata": _run_sync_step("빅데이터 ESG", sync_bigdata_esg),
+        "news_recent": _run_sync_step("KOR/DEU 최근 뉴스", _sync_recent_target_news),
+        "news_country_backfill": _run_sync_step("뉴스 국가 코드 보정", backfill_news_countries),
+    }
+    print("전체 동기화 완료", flush=True)
+    return results
 
-def start_scheduler():
+def start_scheduler(sync_indicators_on_start=True):
     scheduler = BackgroundScheduler()
     scheduler.add_job(run_all_syncs, trigger=IntervalTrigger(hours=1), id="sync_all", replace_existing=True)
+    if sync_indicators_on_start:
+        scheduler.add_job(
+            run_indicator_syncs,
+            trigger=DateTrigger(run_date=datetime.now()),
+            id="sync_indicators_on_start",
+            replace_existing=True,
+        )
     scheduler.start()
     return scheduler

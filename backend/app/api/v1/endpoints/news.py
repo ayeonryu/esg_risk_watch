@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, BackgroundTasks, Query
+from datetime import date
+
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.news import News
@@ -6,6 +8,18 @@ from app.models.esg_stat import ESGStat
 from app import scheduler
 
 router = APIRouter()
+
+
+def _get_news_url(row: News):
+    if row.url:
+        return row.url
+
+    content = (row.content or "").strip()
+    if content.startswith(("http://", "https://")):
+        return content
+
+    return None
+
 
 def _serialize_news(row: News):
     return {
@@ -21,6 +35,7 @@ def _serialize_news(row: News):
         "published_at": row.published_at.isoformat() if row.published_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "esg_score": row.esg_score,
+        "url": _get_news_url(row),
     }
 
 
@@ -28,14 +43,26 @@ def _serialize_news(row: News):
 def list_news(
     country: str | None = Query(None),
     limit: int = Query(10, ge=1, le=100),
+    start_date: date | None = None,
+    end_date: date | None = None,
     db: Session = Depends(get_db),
 ):
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="start_date must be on or before end_date",
+        )
+
     if country in {"KOR", "DEU"}:
         scheduler.ensure_recent_country_news(country, db)
 
     query = db.query(News)
     if country:
         query = query.filter(News.country == country)
+    if start_date:
+        query = query.filter(News.published_at >= start_date)
+    if end_date:
+        query = query.filter(News.published_at <= end_date)
     if country in {"KOR", "DEU"}:
         query = query.filter(News.external_id.notlike("GDELT:%"))
 
